@@ -114,3 +114,5 @@ label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .stream-box { border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; min-width: 0; }
 .media.both .stream-box { aspect-ratio: auto; height: 220px; }
 .stream-box iframe { width: 100%; height: 100%; border: 0; display: block; }
+
+.pill.new { color: #fff; background: var(--pink); font-weight: 700; }

@@ -1,5 +1,5 @@
 // Service Worker: App-Oberfläche offline starten; Daten immer frisch vom Server.
-const CACHE = "gta-clips-v9";
+const CACHE = "gta-clips-v10";
 const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/manifest.webmanifest", "/icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
@@ -21,4 +21,21 @@ self.addEventListener("fetch", (e) => {
       })
       .catch(() => caches.match(e.request).then((r) => r || caches.match("/")))
   );
+});
+
+// Push-Benachrichtigung anzeigen (z. B. „Neuer Clip“)
+self.addEventListener("push", (e) => {
+  let data = { title: "GTA Clips", body: "", url: "/" };
+  try { data = { ...data, ...e.data.json() }; } catch {}
+  e.waitUntil(self.registration.showNotification(data.title, {
+    body: data.body, icon: "/icons/icon-192.png", badge: "/icons/icon-192.png", data: { url: data.url }, tag: data.url,
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/";
+  e.waitUntil(clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+    for (const c of list) { if ("focus" in c) { c.navigate(url); return c.focus(); } }
+    return clients.openWindow(url);
+  }));
 });

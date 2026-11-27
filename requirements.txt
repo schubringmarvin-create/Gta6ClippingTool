@@ -5,3 +5,4 @@ websockets>=13
 yt-dlp>=2025.1.1
 chat-downloader>=0.2.8
 anthropic>=1.0
+cryptography>=42

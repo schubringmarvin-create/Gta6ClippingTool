@@ -47,6 +47,7 @@ class Settings:
     clip_after: float = field(default_factory=lambda: _f("CLIP_AFTER", 10))
     # Wartezeit, bis die Stelle im Twitch-VOD verfügbar ist
     vod_delay: float = field(default_factory=lambda: _f("VOD_DELAY", 90))
+    clip_retention_days: float = field(default_factory=lambda: _f("CLIP_RETENTION_DAYS", 7))
     poll_interval: float = field(default_factory=lambda: _f("POLL_INTERVAL", 60))
 
     def __post_init__(self) -> None:

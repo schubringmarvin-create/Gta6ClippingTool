@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS clips (
     error TEXT DEFAULT '',
     created_at REAL
 );
+CREATE TABLE IF NOT EXISTS push_subs (
+    id INTEGER PRIMARY KEY,
+    endpoint TEXT UNIQUE,
+    p256dh TEXT,
+    auth TEXT,
+    created_at REAL
+);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -95,7 +102,17 @@ class DB:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Neue Spalten in bestehenden Datenbanken nachrüsten."""
+        wanted = {"clips": {"trim_start": "REAL DEFAULT 0", "trim_end": "REAL DEFAULT 0", "seen": "INTEGER DEFAULT 0"}}
+        for table, cols in wanted.items():
+            have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            for col, typ in cols.items():
+                if col not in have:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -152,6 +169,11 @@ class DB:
         with self._lock:
             self._conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+            self._conn.commit()
+
+    def delete_where(self, table: str, column: str, value: Any) -> None:
+        with self._lock:
+            self._conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (value,))
             self._conn.commit()
 
     def get(self, table: str, row_id: int) -> dict[str, Any] | None:

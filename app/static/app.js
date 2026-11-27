@@ -236,16 +236,21 @@ async function pollChat() {
 
 /* ---------- Clips ---------- */
 let clipFilter = "";
+let clipSort = "new";
+let openClipId = null;
 async function renderClips() {
-  const clips = await api("/api/clips" + (clipFilter ? `?status=${clipFilter}` : ""));
+  const clips = await api(`/api/clips?sort=${clipSort}` + (clipFilter ? `&status=${clipFilter}` : ""));
   campaigns = await api("/api/campaigns");
   const busy = clips.some((c) => c.status === "queued" || c.status === "cutting");
-  const filters = [["", "Alle"], ["ready", "Fertig"], ["cutting", "Schneidet"], ["queued", "Wartet"], ["failed", "Fehler"]];
+  const filters = [["", "Alle"], ["new", "Neu"], ["ready", "Fertig"], ["posted", "Gepostet"], ["cutting", "Schneidet"], ["failed", "Fehler"]];
   view.innerHTML = `
     <div class="seg">${filters.map(([v, l]) => `<button class="btn small ${clipFilter === v ? "active" : ""}" data-filter="${v}">${l}</button>`).join("")}</div>
+    <div class="seg"><button class="btn small ${clipSort === "new" ? "active" : ""}" data-sort="new">Neueste zuerst</button><button class="btn small ${clipSort === "best" ? "active" : ""}" data-sort="best">🔥 Bester Hype zuerst</button></div>
     <button class="btn ghost" id="manual" style="width:100%;margin-bottom:12px">+ Clip aus Link (VOD / Clip)</button>
     ${clips.length ? clips.map(clipMini).join("") : '<div class="card muted">Noch keine Clips. Sobald ein Chat eskaliert, erscheint hier automatisch ein Clip.</div>'}`;
   view.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => { clipFilter = b.dataset.filter; renderClips(); }));
+  view.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => { clipSort = b.dataset.sort; renderClips(); }));
+  if (openClipId) { const c = clips.find((x) => x.id == openClipId); openClipId = null; if (c) openClip(c); }
   view.querySelectorAll("[data-clip]").forEach((el) => el.addEventListener("click", () => openClip(clips.find((c) => c.id == el.dataset.clip))));
   $("#manual").addEventListener("click", manualClipSheet);
   clearInterval(timer);
@@ -258,9 +263,10 @@ function clipMini(c) {
   return `<div class="card clip-mini" data-clip="${c.id}">
     ${c.thumb_url ? `<img src="${c.thumb_url}" alt="" loading="lazy">` : `<div class="ph">${c.status === "failed" ? "✗" : "…"}</div>`}
     <div class="stack" style="gap:4px;min-width:0">
-      <div class="row between"><b class="ellipsis">${esc(c.display_name || c.channel || "Clip")}</b><span class="pill ${cls}">${label}</span></div>
+      <div class="row between"><b class="ellipsis">${esc(c.display_name || c.channel || "Clip")}</b><span class="row" style="gap:4px">${c.status === "ready" && !c.seen ? '<span class="pill new">NEU</span>' : ""}${c.post_count ? '<span class="pill ok">gepostet</span>' : `<span class="pill ${cls}">${label}</span>`}</span></div>
       <div class="small ellipsis">${esc(c.hook || "")}</div>
-      <div class="muted small">${fmtTime(c.created_at)}${c.duration ? " · " + Math.round(c.duration) + "s" : ""}${c.campaign_name ? " · " + esc(c.campaign_name) : ""}${c.post_count ? " · gepostet" : ""}</div>
+      ${c.hype_rate ? `<div class="small" style="color:var(--orange)">🔥 Chat ${c.hype_rate}/s statt Ø ${c.hype_baseline}/s (${Math.round(c.hype_rate / Math.max(c.hype_baseline, 0.05))}×)</div>` : ""}
+      <div class="muted small">${fmtTime(c.created_at)}${c.duration ? " · " + Math.round(c.duration) + "s" : ""}${c.campaign_name ? " · " + esc(c.campaign_name) : ""}</div>
       ${c.error ? `<div class="small" style="color:${c.status === "failed" ? "var(--red)" : "var(--orange)"}">${esc(c.error)}</div>` : ""}
     </div></div>`;
 }
@@ -270,6 +276,10 @@ function campaignOptions(selected) {
 }
 
 function openClip(c) {
+  if (c.status === "ready" && !c.seen) {
+    c.seen = 1;
+    api(`/api/clips/${c.id}`, { method: "PATCH", body: { seen: 1 } }).catch(() => {});
+  }
   openSheet(`
     <div class="clip card" style="margin:-4px 0 12px">
       ${c.video_url ? `<video src="${c.video_url}" controls playsinline preload="metadata" poster="${c.thumb_url}"></video>` : ""}
@@ -277,10 +287,15 @@ function openClip(c) {
     <div class="stack">
       <div class="row between"><b>${esc(c.display_name || c.channel || "Clip")}</b><span class="pill ${(STATUS[c.status] || [])[1] || ""}">${(STATUS[c.status] || [c.status])[0]}</span></div>
       ${c.error ? `<div class="card warn-box small" style="margin:0">${esc(c.error)}</div>` : ""}
+      ${c.hype_sample && c.hype_sample.length ? `<div class="card small" style="margin:0;background:var(--card2)">
+        <b>🔥 Was im Chat los war</b> <span class="muted">· ${c.hype_rate}/s statt Ø ${c.hype_baseline}/s${c.hype_keywords?.length ? " · " + esc(c.hype_keywords.join(", ")) : ""}</span>
+        <div class="chat-msgs" style="max-height:140px;padding:6px 0 0">${c.hype_sample.map((m) => `<div class="chat-msg">${esc(m)}</div>`).join("")}</div></div>` : ""}
       <label>Hook (Text oben im Clip – leer lassen = kein Text)<input id="c-hook" value="${esc(c.hook)}" maxlength="80"></label>
+      <div class="row"><label class="grow">Anfang kürzen (Sek.)<input id="c-trim-s" type="number" min="0" step="1" inputmode="numeric" value="${c.trim_start || 0}"></label>
+        <label class="grow">Ende kürzen (Sek.)<input id="c-trim-e" type="number" min="0" step="1" inputmode="numeric" value="${c.trim_end || 0}"></label></div>
       <label>Layout<select id="c-layout"><option value="blur" ${c.layout !== "crop" ? "selected" : ""}>Ganzes Bild + unscharfer Hintergrund</option><option value="crop" ${c.layout === "crop" ? "selected" : ""}>Mitte zuschneiden (Vollbild)</option></select></label>
       <label>Kampagne<select id="c-camp">${campaignOptions(c.campaign_id)}</select></label>
-      <button class="btn" id="c-rerender">Mit neuem Hook / Layout neu schneiden</button>
+      <button class="btn" id="c-rerender">Mit neuem Hook / Länge / Layout neu schneiden</button>
       ${c.video_url ? `<div class="btns"><button class="btn primary" id="c-share">Teilen / Posten</button><a class="btn ghost" href="${c.video_url}" download="gta-clip-${c.id}.mp4" style="text-align:center;text-decoration:none">Download</a></div>` : ""}
       <h2>Posten mit Regel-Check</h2>
       <label>Plattform<select id="c-platform">${PLATFORMS.map((p) => `<option>${p}</option>`).join("")}</select></label>
@@ -295,6 +310,7 @@ function openClip(c) {
 
   const save = () => api(`/api/clips/${c.id}`, { method: "PATCH", body: {
     hook: $("#c-hook").value, layout: $("#c-layout").value,
+    trim_start: Math.max(0, Number($("#c-trim-s").value) || 0), trim_end: Math.max(0, Number($("#c-trim-e").value) || 0),
     campaign_id: $("#c-camp").value ? Number($("#c-camp").value) : null, caption: $("#c-caption").value } });
   const runCheck = async () => {
     await save();
@@ -611,6 +627,22 @@ async function renderStreamers() {
         <select id="h-max">${[2, 4, 6, 10, 20].map((f) => `<option value="${f}" ${cfg.hype_max_per_hour == f ? "selected" : ""}>${f}</option>`).join("")}</select></label>
       <button class="btn" id="h-save">Hype-Einstellungen speichern</button>
     </div>
+    <h2>Benachrichtigungen</h2>
+    <div class="card stack">
+      <p class="muted small" style="margin:0">Dein Handy meldet sich, sobald ein neuer Clip fertig ist.</p>
+      <div class="small" id="push-state">…</div>
+      <div class="btns"><button class="btn primary" id="push-on">Aktivieren</button><button class="btn ghost" id="push-test">Test</button></div>
+      <button class="btn ghost small" id="push-off">Auf diesem Handy ausschalten</button>
+    </div>
+    <h2>Speicher</h2>
+    <div class="card stack">
+      <div class="small">Frei: <b>${cfg.disk.free_gb} GB</b> von ${cfg.disk.total_gb} GB · Clips: ${cfg.disk.clips_gb} GB · Rohmaterial: ${cfg.disk.raw_gb} GB</div>
+      <div class="meter"><div style="width:${Math.min(100, Math.round((1 - cfg.disk.free_gb / Math.max(cfg.disk.total_gb, 1)) * 100))}%"></div></div>
+      <label>Nicht gepostete Clips automatisch löschen nach
+        <select id="ret">${[[3, "3 Tagen"], [7, "7 Tagen (empfohlen)"], [14, "14 Tagen"], [30, "30 Tagen"], [0, "nie"]].map(([v, l]) => `<option value="${v}" ${cfg.clip_retention_days == v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <p class="muted small" style="margin:0">Gepostete Clips bleiben immer. Rohmaterial wird nach 3 Tagen gelöscht, fehlgeschlagene Clips nach 2 Tagen. Wird der Speicher knapp, gehen die ältesten nicht geposteten Clips zuerst.</p>
+      <div class="btns"><button class="btn" id="ret-save">Speichern</button><button class="btn ghost" id="clean-now">Jetzt aufräumen</button></div>
+    </div>
     <h2>App-Update</h2>
     <div class="card stack" id="upd-card">
       <div class="small">Version: <b>${esc(upd.version || "unbekannt")}</b></div>
@@ -626,6 +658,18 @@ async function renderStreamers() {
       toast("Gespeichert – gilt sofort");
     } catch (e) { toast(e.message); }
   });
+  $("#ret-save").addEventListener("click", async () => {
+    try { await api("/api/settings", { method: "PUT", body: { clip_retention_days: Number($("#ret").value) } }); toast("Gespeichert"); }
+    catch (e) { toast(e.message); }
+  });
+  $("#clean-now").addEventListener("click", async () => {
+    try {
+      const r = await api("/api/cleanup", { method: "POST" });
+      toast(`Aufgeräumt: ${r.removed.clips} Clips, ${r.removed.raw} Rohdateien · ${r.disk.free_gb} GB frei`, 4000);
+      renderStreamers();
+    } catch (e) { toast(e.message); }
+  });
+  setupPush(cfg.push_key);
   $("#upd-go").addEventListener("click", async () => {
     try {
       await api("/api/update", { method: "POST" });
@@ -659,13 +703,66 @@ async function renderStreamers() {
   $("#logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }); showLogin(); });
 }
 
+/* ---------- Push-Benachrichtigungen ---------- */
+function urlB64ToUint8(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from([...raw].map((ch) => ch.charCodeAt(0)));
+}
+
+async function setupPush(key) {
+  const state = $("#push-state");
+  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if (!supported) {
+    state.innerHTML = isIOS && !standalone
+      ? "Auf dem iPhone geht das nur, wenn die App auf dem <b>Home-Bildschirm</b> liegt (Teilen → „Zum Home-Bildschirm“) und von dort geöffnet wird."
+      : "Dieser Browser unterstützt keine Benachrichtigungen.";
+    ["#push-on", "#push-test", "#push-off"].forEach((s) => $(s).classList.add("hidden"));
+    return;
+  }
+  const reg = await navigator.serviceWorker.ready;
+  const refresh = async () => {
+    const sub = await reg.pushManager.getSubscription();
+    state.innerHTML = sub ? '<span class="pill ok">Aktiv auf diesem Handy</span>' :
+      Notification.permission === "denied" ? '<span class="pill bad">Blockiert</span> – in den Handy-Einstellungen für diese App erlauben.' : '<span class="pill">Aus</span>';
+    $("#push-on").classList.toggle("hidden", !!sub);
+    $("#push-off").classList.toggle("hidden", !sub);
+    $("#push-test").classList.toggle("hidden", !sub);
+  };
+  $("#push-on").addEventListener("click", async () => {
+    try {
+      if ((await Notification.requestPermission()) !== "granted") { toast("Benachrichtigungen nicht erlaubt"); return refresh(); }
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
+      await api("/api/push/subscribe", { method: "POST", body: sub.toJSON() });
+      toast("Benachrichtigungen aktiv");
+    } catch (e) { toast("Fehler: " + e.message, 5000); }
+    refresh();
+  });
+  $("#push-off").addEventListener("click", async () => {
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await api("/api/push/unsubscribe", { method: "POST", body: sub.toJSON() }).catch(() => {});
+      await sub.unsubscribe();
+    }
+    refresh();
+  });
+  $("#push-test").addEventListener("click", async () => {
+    try { const r = await api("/api/push/test", { method: "POST" }); toast(r.sent ? "Test gesendet" : "Kein Gerät erreicht – bitte neu aktivieren"); }
+    catch (e) { toast(e.message); }
+  });
+  refresh();
+}
+
 /* ---------- Start ---------- */
 (async () => {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   try {
     await api("/api/status");
     $("#app").classList.remove("hidden");
-    show("live");
+    const m = location.hash.match(/^#clip-(\d+)$/);
+    if (m) { openClipId = Number(m[1]); history.replaceState(null, "", "/"); show("clips"); } else show("live");
   } catch {
     showLogin();
   }

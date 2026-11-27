@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import os
 import hashlib
 import hmac
 import io
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import campaign_search, captions, clipper, link_import
+from . import campaign_search, captions, clipper, link_import, push
 from .config import settings
 from .db import DB
 from .rules import campaign_from_json, check_clip, earnings
@@ -32,7 +33,8 @@ SESSION_DAYS = 60
 db = DB(settings.data_dir / "clipper.db")
 EDITABLE = ("twitch_client_id", "twitch_client_secret", "anthropic_api_key")
 # Hype-Regler: (min, max)
-HYPE_KEYS = {"hype_factor": (2, 10), "hype_min_rate": (0.2, 20), "hype_cooldown": (60, 3600), "hype_max_per_hour": (1, 30)}
+HYPE_KEYS = {"hype_factor": (2, 10), "hype_min_rate": (0.2, 20), "hype_cooldown": (60, 3600), "hype_max_per_hour": (1, 30),
+             "clip_retention_days": (0, 90)}
 
 
 def apply_db_settings() -> None:
@@ -53,6 +55,39 @@ def apply_db_settings() -> None:
 
 apply_db_settings()
 watcher = Watcher(db, settings)
+vapid = push.Vapid(settings.data_dir)
+PUSH_SUBJECT = f"https://{os.environ['DOMAIN']}" if os.environ.get("DOMAIN") else "mailto:gta-clips@example.com"
+
+
+async def notify_all(title: str, body: str, url: str = "/") -> dict[str, int]:
+    sent = gone = 0
+    for sub in db.all("SELECT * FROM push_subs"):
+        try:
+            code = await push.send(vapid, sub, {"title": title, "body": body, "url": url}, PUSH_SUBJECT)
+        except Exception as exc:
+            logging.getLogger("push").warning("Push fehlgeschlagen: %s", exc)
+            continue
+        if code in (404, 410):  # Abo abgelaufen
+            db.delete("push_subs", sub["id"])
+            gone += 1
+        elif code < 300:
+            sent += 1
+    return {"sent": sent, "removed": gone}
+
+
+async def clip_ready_push(clip_id: int) -> None:
+    c = db.one("SELECT c.hook, c.duration, s.display_name, s.channel, e.rate, e.baseline FROM clips c "
+               "LEFT JOIN streamers s ON s.id = c.streamer_id LEFT JOIN events e ON e.id = c.event_id WHERE c.id = ?",
+               (clip_id,))
+    if not c:
+        return
+    who = c["display_name"] or c["channel"] or "Clip"
+    extra = f" · Chat {c['rate']}/s statt {c['baseline']}/s" if c.get("rate") else ""
+    await notify_all(f"🎬 Neuer Clip: {who}", f"{c['hook'] or 'Fertig geschnitten'} ({round(c['duration'] or 0)} s){extra}",
+                     f"/#clip-{clip_id}")
+
+
+watcher.on_clip_ready = clip_ready_push
 
 
 @asynccontextmanager
@@ -129,7 +164,10 @@ def status() -> dict[str, Any]:
     if watcher.last_error:
         warnings.append(f"Letzte Abfrage fehlgeschlagen: {watcher.last_error}")
     counts = {r["status"]: r["n"] for r in db.all("SELECT status, COUNT(*) AS n FROM clips GROUP BY status")}
-    return {"streamers": watcher.status(), "warnings": warnings, "last_poll": watcher.last_poll,
+    disk = watcher.disk()
+    if disk["free_gb"] < 3:
+        warnings.append(f"Nur noch {disk['free_gb']} GB Speicher frei – alte Clips werden automatisch gelöscht.")
+    return {"streamers": watcher.status(), "warnings": warnings, "last_poll": watcher.last_poll, "disk": disk,
             "clips": counts, "events": db.all(
                 "SELECT e.*, s.channel FROM events e LEFT JOIN streamers s ON s.id = e.streamer_id "
                 "ORDER BY e.ts DESC LIMIT 15")}
@@ -145,6 +183,7 @@ class SettingsIn(BaseModel):
     hype_min_rate: float | None = None
     hype_cooldown: float | None = None
     hype_max_per_hour: float | None = None
+    clip_retention_days: float | None = None
 
 
 def _mask(value: str) -> str:
@@ -157,7 +196,8 @@ def get_settings() -> dict[str, Any]:
             "twitch_client_secret": _mask(settings.twitch_client_secret),
             "anthropic_api_key": _mask(settings.anthropic_api_key),
             "twitch_ready": settings.twitch_ready,
-            **{k: getattr(settings, k) for k in HYPE_KEYS}}
+            **{k: getattr(settings, k) for k in HYPE_KEYS}, "disk": watcher.disk(),
+            "push_key": vapid.public_b64}
 
 
 @app.put("/api/settings", dependencies=A)
@@ -218,6 +258,44 @@ def update_status() -> dict[str, Any]:
 def request_update() -> dict[str, Any]:
     (settings.data_dir / "update-request").write_text(str(time.time()))
     return _update_status()
+
+
+# ---------- Push ----------
+class PushSub(BaseModel):
+    endpoint: str
+    keys: dict[str, str]
+
+
+@app.get("/api/push", dependencies=A)
+def push_info() -> dict[str, Any]:
+    return {"key": vapid.public_b64, "subscriptions": len(db.all("SELECT id FROM push_subs"))}
+
+
+@app.post("/api/push/subscribe", dependencies=A)
+def push_subscribe(body: PushSub) -> dict[str, Any]:
+    if not body.endpoint.startswith("https://") or not body.keys.get("p256dh") or not body.keys.get("auth"):
+        raise HTTPException(400, "Ungültiges Push-Abo")
+    db.delete_where("push_subs", "endpoint", body.endpoint)
+    db.insert("push_subs", {"endpoint": body.endpoint, "p256dh": body.keys["p256dh"], "auth": body.keys["auth"],
+                            "created_at": time.time()})
+    return push_info()
+
+
+@app.post("/api/push/unsubscribe", dependencies=A)
+def push_unsubscribe(body: PushSub) -> dict[str, Any]:
+    db.delete_where("push_subs", "endpoint", body.endpoint)
+    return push_info()
+
+
+@app.post("/api/push/test", dependencies=A)
+async def push_test() -> dict[str, int]:
+    return await notify_all("GTA Clips", "Benachrichtigungen funktionieren 🎉", "/")
+
+
+@app.post("/api/cleanup", dependencies=A)
+async def cleanup_now() -> dict[str, Any]:
+    removed = await asyncio.to_thread(watcher.cleanup)
+    return {"removed": removed, "disk": watcher.disk()}
 
 
 # ---------- Streamer ----------
@@ -507,13 +585,28 @@ def _clip_out(c: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/api/clips", dependencies=A)
-def list_clips(status: str | None = None) -> list[dict[str, Any]]:
+def list_clips(status: str | None = None, sort: str = "new") -> list[dict[str, Any]]:
     sql = ("SELECT c.*, s.channel, s.display_name, k.name AS campaign_name, "
+           "e.rate AS hype_rate, e.baseline AS hype_baseline, e.score AS hype_score, e.sample AS hype_sample, "
+           "e.keywords AS hype_keywords, "
            "(SELECT COUNT(*) FROM posts p WHERE p.clip_id = c.id) AS post_count "
            "FROM clips c LEFT JOIN streamers s ON s.id = c.streamer_id "
-           "LEFT JOIN campaigns k ON k.id = c.campaign_id")
-    rows = db.all(sql + (" WHERE c.status = ?" if status else "") + " ORDER BY c.id DESC LIMIT 100",
-                  (status,) if status else ())
+           "LEFT JOIN campaigns k ON k.id = c.campaign_id LEFT JOIN events e ON e.id = c.event_id")
+    where, args = "", ()
+    if status == "posted":
+        where = " WHERE (SELECT COUNT(*) FROM posts p WHERE p.clip_id = c.id) > 0"
+    elif status == "new":
+        where = " WHERE c.status = 'ready' AND c.seen = 0"
+    elif status:
+        where, args = " WHERE c.status = ?", (status,)
+    order = " ORDER BY COALESCE(e.score, 0) DESC, c.id DESC" if sort == "best" else " ORDER BY c.id DESC"
+    rows = db.all(sql + where + order + " LIMIT 150", args)
+    for r in rows:
+        for k in ("hype_sample", "hype_keywords"):
+            try:
+                r[k] = json.loads(r[k]) if r.get(k) else []
+            except ValueError:
+                r[k] = []
     return [_clip_out(r) for r in rows]
 
 
@@ -539,6 +632,9 @@ class ClipPatch(BaseModel):
     caption: str | None = None
     campaign_id: int | None = None
     layout: str | None = None
+    trim_start: float | None = None
+    trim_end: float | None = None
+    seen: int | None = None
 
 
 @app.patch("/api/clips/{cid}", dependencies=A)
@@ -563,11 +659,7 @@ async def rerender(cid: int) -> dict[str, bool]:
 def delete_clip(cid: int) -> dict[str, bool]:
     clip = db.get("clips", cid)
     if clip:
-        for name in (clip["file"], clip["thumb"]):
-            if name:
-                (settings.clips_dir / name).unlink(missing_ok=True)
-        if clip["raw_file"]:
-            Path(clip["raw_file"]).unlink(missing_ok=True)
+        watcher.remove_clip_files(clip)
         db.delete("clips", cid)
     return {"ok": True}
 

@@ -47,6 +47,7 @@ class Watcher:
     def __init__(self, db: DB, settings: Settings):
         self.db = db
         self.s = settings
+        self.on_clip_ready = None  # async callback(clip_id), z. B. Push-Benachrichtigung
         self.twitch = Twitch(settings.twitch_client_id, settings.twitch_client_secret) if settings.twitch_ready else None
         self.live: dict[int, dict[str, Any]] = {}
         self.detectors: dict[int, HypeDetector] = {}
@@ -77,11 +78,75 @@ class Watcher:
                 self.queue.put_nowait(c["id"])
             else:
                 self.db.update("clips", c["id"], {"status": "failed", "error": "Server wurde neu gestartet."})
-        self.tasks = [asyncio.create_task(self._poll_loop()), asyncio.create_task(self._worker())]
+        self.tasks = [asyncio.create_task(self._poll_loop()), asyncio.create_task(self._worker()),
+                      asyncio.create_task(self._cleanup_loop())]
 
     async def stop(self) -> None:
         for t in [*self.tasks, *self.chat_tasks.values()]:
             t.cancel()
+
+    # ---------- Aufräumen ----------
+    def remove_clip_files(self, clip: dict[str, Any], keep_final: bool = False) -> None:
+        names = [] if keep_final else [clip.get("file"), clip.get("thumb")]
+        for name in names:
+            if name:
+                (self.s.clips_dir / name).unlink(missing_ok=True)
+        if clip.get("raw_file"):
+            Path(clip["raw_file"]).unlink(missing_ok=True)
+
+    def disk(self) -> dict[str, float]:
+        import shutil
+        total, used, free = shutil.disk_usage(self.s.data_dir)
+        clips = sum(f.stat().st_size for f in self.s.clips_dir.glob("*") if f.is_file())
+        raw = sum(f.stat().st_size for f in self.s.tmp_dir.glob("*") if f.is_file())
+        gb = 1024 ** 3
+        return {"free_gb": round(free / gb, 1), "total_gb": round(total / gb, 1),
+                "clips_gb": round(clips / gb, 2), "raw_gb": round(raw / gb, 2)}
+
+    def cleanup(self) -> dict[str, int]:
+        """Löscht alte, nicht gepostete Clips und Rohdateien, damit der Speicher nicht vollläuft."""
+        now = time.time()
+        days = float(self.s.clip_retention_days)
+        removed = {"clips": 0, "raw": 0, "failed": 0}
+        posted = {r["clip_id"] for r in self.db.all("SELECT DISTINCT clip_id FROM posts")}
+        for c in self.db.all("SELECT * FROM clips WHERE status IN ('ready','failed') ORDER BY created_at"):
+            age = now - (c["created_at"] or now)
+            if c["status"] == "failed" and age > 2 * 86400:
+                self.remove_clip_files(c)
+                self.db.delete("clips", c["id"])
+                removed["failed"] += 1
+            elif c["status"] == "ready" and c["id"] not in posted and days > 0 and age > days * 86400:
+                self.remove_clip_files(c)
+                self.db.delete("clips", c["id"])
+                removed["clips"] += 1
+            elif c["raw_file"] and age > 3 * 86400 and Path(c["raw_file"]).exists():
+                Path(c["raw_file"]).unlink(missing_ok=True)
+                removed["raw"] += 1
+        # Speicher fast voll: älteste nicht gepostete Clips zuerst weg
+        while self.disk()["free_gb"] < 2:
+            c = self.db.one("SELECT * FROM clips WHERE status='ready' AND id NOT IN (SELECT clip_id FROM posts) "
+                            "ORDER BY created_at LIMIT 1")
+            if not c:
+                break
+            self.remove_clip_files(c)
+            self.db.delete("clips", c["id"])
+            removed["clips"] += 1
+        # verwaiste Rohdateien
+        known = {Path(r["raw_file"]).name for r in self.db.all("SELECT raw_file FROM clips WHERE raw_file != ''")}
+        for f in self.s.tmp_dir.glob("clip_*"):
+            if f.name not in known and now - f.stat().st_mtime > 86400:
+                f.unlink(missing_ok=True)
+        if any(removed.values()):
+            log.info("Aufgeräumt: %s", removed)
+        return removed
+
+    async def _cleanup_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.to_thread(self.cleanup)
+            except Exception:
+                log.exception("Aufräumen fehlgeschlagen")
+            await asyncio.sleep(3600)
 
     # ---------- Live-Status ----------
     async def _poll_loop(self) -> None:
@@ -249,6 +314,7 @@ class Watcher:
         clip = self.db.get("clips", clip_id)
         if not clip:
             return
+        was_ready = bool(clip["file"])  # neu geschnitten statt neu -> keine Benachrichtigung
         self.db.update("clips", clip_id, {"status": "cutting", "error": ""})
         streamer = self.db.get("streamers", clip["streamer_id"]) if clip["streamer_id"] else None
         campaign = self.db.get("campaigns", clip["campaign_id"]) if clip["campaign_id"] else None
@@ -271,6 +337,12 @@ class Watcher:
         # Länge: höchstens max_s, Hype-Moment liegt am Ende -> von hinten nehmen
         length = min(raw_dur, max_s) if raw_dur else max_s
         start = max(0.0, raw_dur - length) if raw_dur else 0.0
+        # Vom Nutzer zugeschnitten (Anfang/Ende kürzen), mindestens 5 s übrig lassen
+        trim_s, trim_e = float(clip.get("trim_start") or 0), float(clip.get("trim_end") or 0)
+        if trim_s or trim_e:
+            new_len = max(5.0, length - trim_s - trim_e)
+            start = min(start + trim_s, start + length - new_len)
+            length = new_len
 
         if not words and captions.whisper_available():
             transcript, words = await asyncio.to_thread(captions.transcribe, raw, self.s.whisper_model,
@@ -297,4 +369,6 @@ class Watcher:
         note = f"Hinweis: nur {duration:.0f}s Material (Kampagne will mind. {min_s}s)." if duration < min_s else ""
         self.db.update("clips", clip_id, {"status": "ready", "file": out.name, "thumb": thumb.name,
                                           "duration": round(duration, 1), "hook": hook, "caption": caption,
-                                          "error": note})
+                                          "error": note, "seen": 0})
+        if self.on_clip_ready and not was_ready:
+            asyncio.create_task(self.on_clip_ready(clip_id))
