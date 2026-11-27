@@ -295,9 +295,19 @@ async def import_campaigns(request: Request) -> dict[str, int]:
         raise HTTPException(400, "Erwarte eine Liste von Kampagnen")
     n = 0
     for item in items:
-        if isinstance(item, dict):
-            db.insert("campaigns", campaign_from_json(item))
-            n += 1
+        if not isinstance(item, dict):
+            continue
+        cid = db.insert("campaigns", campaign_from_json(item))
+        n += 1
+        # Mit Twitch-Kanal: Streamer gleich anlegen bzw. mit der Kampagne verknüpfen
+        channel = str(item.get("twitch_channel") or "").strip().rstrip("/").split("/")[-1].lstrip("@").lower()
+        if channel:
+            existing = db.one("SELECT id FROM streamers WHERE platform='twitch' AND channel=?", (channel,))
+            if existing:
+                db.update("streamers", existing["id"], {"campaign_id": cid})
+            else:
+                db.insert("streamers", {"platform": "twitch", "channel": channel, "active": 1, "campaign_id": cid,
+                                        "display_name": str(item.get("streamer") or channel)})
     return {"imported": n}
 
 

@@ -15,8 +15,10 @@ def test_login_and_crud():
                                            "campaign_id": k["id"]}).json()
         assert s["channel"] == "skilmasktimmy"
         assert c.post("/api/streamers", json={"platform": "twitch", "channel": "skilmasktimmy"}).status_code == 409
-        r = c.post("/api/campaigns/import", json={"kampagnen": [{"name": "Boeshi", "rate": 0.5}]}).json()
+        r = c.post("/api/campaigns/import", json={"kampagnen": [{"name": "Boeshi", "rate": 0.5,
+                                                                  "twitch_channel": "twitch.tv/DaRealBoeshi"}]}).json()
         assert r["imported"] == 1
+        assert any(s["channel"] == "darealboeshi" and s["campaign_id"] for s in c.get("/api/streamers").json())
         assert len(c.get("/api/campaigns").json()) == 2
         assert c.get("/media/../clipper.db").status_code == 404
         assert c.get("/").status_code == 200
