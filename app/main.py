@@ -174,6 +174,28 @@ async def put_settings(body: SettingsIn, response: Response) -> dict[str, Any]:
     return get_settings()
 
 
+# ---------- Updates ----------
+def _update_status() -> dict[str, Any]:
+    f = settings.data_dir / "update-status.json"
+    try:
+        status = json.loads(f.read_text())
+    except (OSError, ValueError):
+        status = {"state": "unknown", "message": "", "version": ""}
+    status["requested"] = (settings.data_dir / "update-request").exists()
+    return status
+
+
+@app.get("/api/update", dependencies=A)
+def update_status() -> dict[str, Any]:
+    return _update_status()
+
+
+@app.post("/api/update", dependencies=A)
+def request_update() -> dict[str, Any]:
+    (settings.data_dir / "update-request").write_text(str(time.time()))
+    return _update_status()
+
+
 # ---------- Streamer ----------
 class StreamerIn(BaseModel):
     platform: str = "twitch"

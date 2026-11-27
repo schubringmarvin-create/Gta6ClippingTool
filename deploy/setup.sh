@@ -38,9 +38,19 @@ else
   sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|; s|^APP_PASSWORD=.*|APP_PASSWORD=${PW}|" .env
 fi
 
-# 4) Starten
+# 4) Automatische Updates: App-Knopf (minütlich geprüft) + jede Nacht um 4:30
+REPO_DIR="$(pwd)"
+chmod +x deploy/update.sh
+cat > /etc/cron.d/gta-clips <<CRON
+* * * * * root ${REPO_DIR}/deploy/update.sh --if-requested >/dev/null 2>&1
+30 4 * * * root ${REPO_DIR}/deploy/update.sh >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/gta-clips
+
+# 5) Starten
 echo "-> Baue und starte die App (beim ersten Mal 3-5 Minuten) ..."
 docker compose up -d --build
+printf '{"state":"ok","message":"Installiert","at":%s,"version":"%s"}\n' "$(date +%s)" "$(git log -1 --format='%h · %cd' --date=format:'%d.%m.%Y %H:%M')" > data/update-status.json
 
 DOMAIN_NOW="$(grep '^DOMAIN=' .env | cut -d= -f2-)"
 PW_NOW="$(grep '^APP_PASSWORD=' .env | cut -d= -f2-)"

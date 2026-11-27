@@ -42,3 +42,13 @@ def test_settings_and_password_change():
         assert c.post("/api/login", json={"password": "test-pw"}).status_code == 401
         assert c.post("/api/login", json={"password": "neues-passwort"}).status_code == 200
         settings.app_password = "test-pw"
+
+
+def test_update_request():
+    from app.config import settings
+    with TestClient(app) as c:
+        c.post("/api/login", json={"password": settings.app_password})
+        assert c.get("/api/update").json()["requested"] is False
+        assert c.post("/api/update").json()["requested"] is True
+        assert (settings.data_dir / "update-request").exists()
+        (settings.data_dir / "update-request").unlink()

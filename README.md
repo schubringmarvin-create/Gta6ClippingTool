@@ -123,6 +123,11 @@ Clip unter **Clips**. Dort: ansehen → Hook ggf. anpassen → **Teilen / Posten
 
 ## Wartung
 
+**Updates:** In der App unter **Streamer → App-Update → „Nach Updates suchen & installieren“**. Außerdem
+prüft der Server jede Nacht um 4:30 selbst auf Updates. Das Terminal brauchst du dafür nicht.
+
+Von Hand im Terminal geht es weiterhin so:
+
 ```bash
 cd gta-clips
 git pull && docker compose up -d --build   # Update einspielen

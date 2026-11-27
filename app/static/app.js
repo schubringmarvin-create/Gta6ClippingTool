@@ -463,8 +463,9 @@ async function renderTracker() {
 
 /* ---------- Streamer ---------- */
 async function renderStreamers() {
-  let cfg;
-  [streamers, campaigns, cfg] = await Promise.all([api("/api/streamers"), api("/api/campaigns"), api("/api/settings")]);
+  let cfg, upd;
+  [streamers, campaigns, cfg, upd] = await Promise.all([api("/api/streamers"), api("/api/campaigns"), api("/api/settings"),
+    api("/api/update").catch(() => ({}))]);
   view.innerHTML = `
     <div class="card stack">
       <b>Streamer hinzufügen</b>
@@ -489,7 +490,21 @@ async function renderStreamers() {
       <button class="btn primary" id="set-save">Einstellungen speichern</button>
       <p class="muted small" style="margin:0">Twitch-Schlüssel bekommst du kostenlos unter dev.twitch.tv/console/apps. Leere Felder bleiben unverändert.</p>
     </div>
+    <h2>App-Update</h2>
+    <div class="card stack" id="upd-card">
+      <div class="small">Version: <b>${esc(upd.version || "unbekannt")}</b></div>
+      ${upd.message ? `<div class="small ${upd.state === "error" ? "err" : "muted"}">${esc(upd.message)}${upd.at ? " · " + fmtTime(upd.at) : ""}</div>` : ""}
+      <button class="btn" id="upd-go" ${upd.requested || upd.state === "running" ? "disabled" : ""}>${upd.requested ? "Update angefordert …" : upd.state === "running" ? "Update läuft …" : "Nach Updates suchen & installieren"}</button>
+      <p class="muted small" style="margin:0">Updates kommen außerdem jede Nacht automatisch. Während der Installation ist die App 2–5 Minuten nicht erreichbar.</p>
+    </div>
     <button class="btn ghost" id="logout" style="width:100%;margin-top:8px">Abmelden</button>`;
+  $("#upd-go").addEventListener("click", async () => {
+    try {
+      await api("/api/update", { method: "POST" });
+      toast("Update angefordert – startet innerhalb einer Minute", 4000);
+      renderStreamers();
+    } catch (e) { toast(e.message); }
+  });
   $("#set-save").addEventListener("click", async () => {
     const body = { twitch_client_id: $("#set-tid").value.trim() || null, twitch_client_secret: $("#set-tsec").value.trim() || null,
       anthropic_api_key: $("#set-akey").value.trim() || null, new_password: $("#set-pw").value || null };
