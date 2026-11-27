@@ -68,3 +68,16 @@ def test_search_endpoint_and_adopt(monkeypatch):
         assert c.get("/api/campaign-search").json()["results"][0]["already_added"]
         st = [s for s in c.get("/api/streamers").json() if s["channel"] == "skilmasktimmy"][0]
         assert st["campaign_id"] and st["active"]
+
+
+def test_live_gta6_endpoint(monkeypatch):
+    from app import main
+    monkeypatch.setattr(main.watcher, "twitch", FakeTwitch())
+    with TestClient(main.app) as c:
+        c.post("/api/login", json={"password": main.settings.app_password})
+        r = c.get("/api/live-gta6").json()
+        assert r["twitch_ready"] and r["streams"][0]["channel"] == "skilmasktimmy"
+    monkeypatch.setattr(main.watcher, "twitch", None)
+    with TestClient(main.app) as c:
+        c.post("/api/login", json={"password": main.settings.app_password})
+        assert c.get("/api/live-gta6").json() == {"twitch_ready": False, "streams": []}

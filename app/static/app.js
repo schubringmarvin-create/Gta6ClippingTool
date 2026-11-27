@@ -335,20 +335,37 @@ function campaignSheet(k = {}) {
 }
 
 async function renderCampaignSearch() {
-  const r = await api("/api/campaign-search");
+  const [r, lv] = await Promise.all([api("/api/campaign-search"), api("/api/live-gta6").catch((e) => ({ error: e.message, streams: [] }))]);
   const running = r.status === "running";
   const results = (r.results || []).map((x, i) => ({ ...x, i })).filter((x) => !liveOnly || x.live_gta6);
   const mins = r.started_at ? Math.max(0, Math.round((Date.now() / 1000 - r.started_at) / 60)) : 0;
+  const streams = lv.streams || [];
   view.innerHTML = `
     ${campTabs()}
+    <h2>Gerade live in GTA 6 auf Twitch</h2>
+    ${lv.error ? `<div class="card warn-box small">${esc(lv.error)}</div>` : lv.twitch_ready === false ? '<div class="card warn-box small">Trag zuerst die Twitch-Schlüssel ein (Streamer → Einstellungen).</div>' : ""}
+    ${streams.length ? `<div class="card stack">${streams.map((s) => `
+      <div class="row" style="align-items:flex-start">
+        <span class="dot live" style="margin-top:6px"></span>
+        <div class="grow" style="min-width:0">
+          <div class="row between"><b class="ellipsis">${esc(s.name || s.channel)}</b><span class="muted small">${s.viewers.toLocaleString("de-DE")}</span></div>
+          <div class="muted small ellipsis">${esc(s.title)}</div>
+          <div class="small" style="margin-top:4px">${s.on_list ? `<span class="pill ok">auf deiner Liste${s.campaign_name ? " · " + esc(s.campaign_name) : ""}</span>` :
+            s.campaign_match ? `<button class="btn small" data-addlive="${esc(s.channel)}" data-camp="${s.campaign_match_id}">Hinzufügen (Kampagne: ${esc(s.campaign_match)})</button>` :
+            `<span class="pill">keine Kampagne bekannt</span> <button class="btn small ghost" data-addlive="${esc(s.channel)}">trotzdem beobachten</button>`}</div>
+        </div>
+      </div>`).join("")}</div>` : lv.twitch_ready ? '<div class="card muted">Gerade streamt niemand GTA 6 – oder Twitch kennt das Spiel noch nicht unter „Grand Theft Auto VI“.</div>' : ""}
+    <p class="muted small">Nur Clips posten, wenn es für den Streamer eine Kampagne gibt oder er Clips ausdrücklich erlaubt.</p>
+
+    <h2>Neue Kampagnen finden</h2>
     <div class="card stack">
-      <b>Clipping-Kampagnen im Netz finden</b>
-      <p class="muted small" style="margin:0">Claude sucht Kampagnen für GTA-6-Streamer auf Twitch (Rate pro 1.000 Aufrufe, Regeln, Pflicht-Tags). Danach prüft die App, wer gerade live GTA 6 spielt. Übernommene Streamer werden automatisch aus dem laufenden Stream geclippt.</p>
-      ${r.has_api_key ? "" : '<div class="card warn-box small" style="margin:0">Dafür wird ein Anthropic-API-Key gebraucht: Streamer → Einstellungen.</div>'}
-      <button class="btn primary" id="cs-go" ${running || !r.has_api_key ? "disabled" : ""}>${running ? `Suche läuft … (${mins} Min.)` : "Kampagnen suchen"}</button>
-      ${running ? '<p class="muted small" style="margin:0">Dauert meist 1–4 Minuten. Du kannst die App solange zumachen.</p>' : ""}
+      ${r.has_api_key ? `
+        <button class="btn primary" id="cs-go" ${running ? "disabled" : ""}>${running ? `Suche läuft … (${mins} Min.)` : "Im Netz suchen (Claude)"}</button>
+        ${running ? '<p class="muted small" style="margin:0">Dauert meist 1–4 Minuten.</p>' : ""}` : `
+        <p class="small" style="margin:0"><b>Kostenlos:</b> Frag Claude im Chat <i>„Such mir GTA-6-Kampagnen“</i>. Du bekommst eine <b>kampagnen.json</b> – die importierst du unter <b>Meine Kampagnen → kampagnen.json importieren</b>.</p>
+        <p class="muted small" style="margin:0">Mit einem Anthropic-API-Key (Streamer → Einstellungen) geht die Suche auch direkt hier per Knopf.</p>`}
       ${r.status === "error" ? `<div class="card warn-box small" style="margin:0">${esc(r.error)}</div>` : ""}
-      ${r.finished_at && !running ? `<p class="muted small" style="margin:0">Letzte Suche: ${fmtTime(r.finished_at)}${r.twitch_checked ? "" : " · Live-Prüfung aus (Twitch-Schlüssel fehlen)"}</p>` : ""}
+      ${r.finished_at && !running ? `<p class="muted small" style="margin:0">Letzte Suche: ${fmtTime(r.finished_at)}</p>` : ""}
     </div>
     ${(r.results || []).length ? `<label class="check" style="margin:0 0 12px"><input type="checkbox" id="cs-live" ${liveOnly ? "checked" : ""}> nur gerade live in GTA 6</label>` : ""}
     ${results.map((x) => `<div class="card stack">
@@ -359,9 +376,7 @@ async function renderCampaignSearch() {
       ${x.rules ? `<div class="small muted">${esc(x.rules)}</div>` : ""}
       ${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noopener" style="color:var(--pink)">Regeln / Kampagne öffnen</a>` : ""}
       ${x.already_added ? '<span class="pill ok" style="justify-self:start">schon auf deiner Liste</span>' : `<button class="btn small" data-adopt="${x.i}">Übernehmen & clippen</button>`}
-    </div>`).join("")}
-    ${r.status === "done" && !results.length ? `<div class="card muted">${liveOnly ? "Gerade ist keiner der gefundenen Streamer live in GTA 6." : "Keine passenden Kampagnen gefunden."}</div>` : ""}
-    ${(r.live_gta6 || []).length ? `<h2>Gerade live in GTA 6 auf Twitch</h2><div class="card stack small">${r.live_gta6.slice(0, 15).map((s) => `<div class="row between"><span class="ellipsis">${esc(s.name || s.channel)}</span><span class="muted">${s.viewers.toLocaleString("de-DE")}</span></div>`).join("")}<p class="muted" style="margin:0">Nur clippen, wenn es für den Streamer eine Kampagne gibt oder er Clips erlaubt.</p></div>` : ""}`;
+    </div>`).join("")}`;
   bindCampTabs();
   $("#cs-go")?.addEventListener("click", async () => {
     try { await api("/api/campaign-search", { method: "POST" }); renderCampaignSearch(); } catch (e) { toast(e.message, 5000); }
@@ -374,8 +389,17 @@ async function renderCampaignSearch() {
       toast("Übernommen – wird jetzt beobachtet und geclippt"); renderCampaignSearch();
     } catch (e) { toast(e.message); b.disabled = false; }
   }));
+  view.querySelectorAll("[data-addlive]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await api("/api/streamers", { method: "POST", body: { platform: "twitch", channel: b.dataset.addlive,
+        campaign_id: b.dataset.camp ? Number(b.dataset.camp) : null } });
+      api("/api/poll", { method: "POST" }).catch(() => {});
+      toast("Wird jetzt beobachtet"); renderCampaignSearch();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  }));
   clearInterval(timer);
-  if (running) timer = setInterval(() => tab === "campaigns" && campSub === "search" && !document.hidden && renderCampaignSearch().catch(() => {}), 5000);
+  timer = setInterval(() => tab === "campaigns" && campSub === "search" && !document.hidden && renderCampaignSearch().catch(() => {}), running ? 5000 : 30000);
 }
 
 /* ---------- Tracker ---------- */

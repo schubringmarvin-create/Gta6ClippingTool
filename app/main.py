@@ -351,6 +351,31 @@ async def start_search() -> dict[str, Any]:
     return get_search()
 
 
+@app.get("/api/live-gta6", dependencies=A)
+async def live_gta6() -> dict[str, Any]:
+    """Kostenlos über die Twitch-API: wer streamt gerade GTA 6, und ist er schon auf meiner Liste?"""
+    if not watcher.twitch:
+        return {"twitch_ready": False, "streams": []}
+    try:
+        streams = await campaign_search.live_gta6_streams(watcher.twitch, limit=40)
+    except Exception as exc:
+        raise HTTPException(502, f"Twitch-Abfrage fehlgeschlagen: {exc}")
+    mine = {s["channel"]: s for s in db.all(
+        "SELECT s.channel, s.campaign_id, k.name AS campaign_name FROM streamers s "
+        "LEFT JOIN campaigns k ON k.id = s.campaign_id WHERE s.platform = 'twitch'")}
+    camps = db.all("SELECT id, name, streamer FROM campaigns")
+    for st in streams:
+        m = mine.get(st["channel"])
+        st["on_list"] = bool(m)
+        st["campaign_name"] = (m or {}).get("campaign_name") or ""
+        if not st["campaign_name"]:  # Kampagne mit passendem Streamer-Namen?
+            hit = next((c for c in camps if c["streamer"] and c["streamer"].lower().replace(" ", "") in
+                        (st["channel"], st["name"].lower())), None)
+            st["campaign_match"] = hit["name"] if hit else ""
+            st["campaign_match_id"] = hit["id"] if hit else None
+    return {"twitch_ready": True, "streams": streams}
+
+
 class AdoptIn(BaseModel):
     index: int
 
