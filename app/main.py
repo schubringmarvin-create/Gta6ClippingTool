@@ -28,6 +28,20 @@ COOKIE = "gta_session"
 SESSION_DAYS = 60
 
 db = DB(settings.data_dir / "clipper.db")
+EDITABLE = ("twitch_client_id", "twitch_client_secret", "anthropic_api_key")
+
+
+def apply_db_settings() -> None:
+    """In der App gespeicherte Werte haben Vorrang vor der .env."""
+    stored = db.get_settings()
+    for key in EDITABLE:
+        if stored.get(key):
+            setattr(settings, key, stored[key])
+    if stored.get("app_password"):
+        settings.app_password = stored["app_password"]
+
+
+apply_db_settings()
 watcher = Watcher(db, settings)
 
 
@@ -94,11 +108,11 @@ A = [Depends(auth)]
 def status() -> dict[str, Any]:
     warnings = []
     if not settings.twitch_ready:
-        warnings.append("Twitch-Schlüssel fehlen (TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET) – Twitch-Streamer werden nicht beobachtet.")
+        warnings.append("Twitch-Schlüssel fehlen – trag sie unter Streamer → Einstellungen ein, sonst werden Twitch-Streamer nicht beobachtet.")
     if settings.enable_captions and not captions.whisper_available():
         warnings.append("ENABLE_CAPTIONS=1, aber faster-whisper ist nicht installiert – Clips ohne Untertitel.")
     if not settings.anthropic_api_key:
-        warnings.append("Kein ANTHROPIC_API_KEY – Hooks und Captions kommen aus einer einfachen Vorlage.")
+        warnings.append("Kein Anthropic-API-Key – Hooks und Captions kommen aus einer einfachen Vorlage (optional, unter Streamer → Einstellungen).")
     for tool, ok in clipper.tools_status().items():
         if not ok:
             warnings.append(f"{tool} fehlt auf dem Server.")
@@ -109,6 +123,53 @@ def status() -> dict[str, Any]:
             "clips": counts, "events": db.all(
                 "SELECT e.*, s.channel FROM events e LEFT JOIN streamers s ON s.id = e.streamer_id "
                 "ORDER BY e.ts DESC LIMIT 15")}
+
+
+# ---------- Einstellungen ----------
+class SettingsIn(BaseModel):
+    twitch_client_id: str | None = None
+    twitch_client_secret: str | None = None
+    anthropic_api_key: str | None = None
+    new_password: str | None = None
+
+
+def _mask(value: str) -> str:
+    return "" if not value else ("•" * 6 + value[-4:] if len(value) > 8 else "•" * 6)
+
+
+@app.get("/api/settings", dependencies=A)
+def get_settings() -> dict[str, Any]:
+    return {"twitch_client_id": settings.twitch_client_id,
+            "twitch_client_secret": _mask(settings.twitch_client_secret),
+            "anthropic_api_key": _mask(settings.anthropic_api_key),
+            "twitch_ready": settings.twitch_ready}
+
+
+@app.put("/api/settings", dependencies=A)
+async def put_settings(body: SettingsIn, response: Response) -> dict[str, Any]:
+    for key in EDITABLE:
+        value = getattr(body, key)
+        if value is None or value.startswith("•"):
+            continue  # leer gelassen oder maskiert = unverändert
+        db.set_setting(key, value.strip())
+        setattr(settings, key, value.strip())
+    if body.new_password:
+        if len(body.new_password) < 8:
+            raise HTTPException(400, "Passwort muss mindestens 8 Zeichen haben")
+        db.set_setting("app_password", body.new_password)
+        settings.app_password = body.new_password
+    watcher.reconfigure()
+    if watcher.twitch:
+        try:
+            await watcher.twitch._auth()  # prüft, ob Client-ID und Secret stimmen
+        except Exception:
+            raise HTTPException(400, "Gespeichert, aber Twitch lehnt die Schlüssel ab – bitte Client-ID und Secret prüfen.")
+        try:
+            await watcher.poll()
+            watcher.last_error = ""
+        except Exception as exc:
+            watcher.last_error = str(exc)
+    return get_settings()
 
 
 # ---------- Streamer ----------

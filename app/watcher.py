@@ -55,6 +55,10 @@ class Watcher:
         self.last_poll = 0.0
         self.last_error = ""
 
+    def reconfigure(self) -> None:
+        """Nach Änderung der Schlüssel in der App neuen Twitch-Client anlegen."""
+        self.twitch = Twitch(self.s.twitch_client_id, self.s.twitch_client_secret) if self.s.twitch_ready else None
+
     # ---------- Lebenszyklus ----------
     async def start(self) -> None:
         for c in self.db.all("SELECT id, source_url FROM clips WHERE status IN ('queued','cutting')"):

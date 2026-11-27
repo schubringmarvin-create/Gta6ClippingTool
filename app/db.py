@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS clips (
     error TEXT DEFAULT '',
     created_at REAL
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 CREATE TABLE IF NOT EXISTS posts (
     id INTEGER PRIMARY KEY,
     clip_id INTEGER REFERENCES clips(id) ON DELETE CASCADE,
@@ -138,6 +142,16 @@ class DB:
     def delete(self, table: str, row_id: int) -> None:
         with self._lock:
             self._conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+            self._conn.commit()
+
+    def get_settings(self) -> dict[str, str]:
+        with self._lock:
+            return {r["key"]: r["value"] for r in self._conn.execute("SELECT key, value FROM settings")}
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
+                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
             self._conn.commit()
 
     def get(self, table: str, row_id: int) -> dict[str, Any] | None:

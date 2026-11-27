@@ -23,39 +23,19 @@ if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh >/dev/null
 fi
 
-# 3) Zugangsdaten abfragen und .env schreiben
-if [ -f .env ] && [ "${1:-}" != "--neu" ]; then
-  echo "-> .env existiert schon – wird behalten (neu eingeben: sudo bash deploy/setup.sh --neu)"
+# 3) .env anlegen – ohne Fragen. Twitch-Schlüssel trägst du danach in der App ein.
+if [ -f .env ]; then
+  echo "-> .env existiert schon – wird behalten"
 else
   IP="$(curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
-  DEFAULT_DOMAIN=""
-  [ -n "$IP" ] && DEFAULT_DOMAIN="$(echo "$IP" | tr '.' '-').sslip.io"
-  echo
-  read -r -p "Adresse der App [${DEFAULT_DOMAIN}]: " DOMAIN
-  DOMAIN="${DOMAIN:-$DEFAULT_DOMAIN}"
-  read -r -p "Twitch Client-ID: " TWITCH_ID
-  read -r -p "Twitch Client-Secret: " TWITCH_SECRET
-  read -r -p "Anthropic API-Key (optional, Enter = ohne): " ANTHROPIC
-  read -r -p "Passwort für die App, nur Buchstaben+Zahlen (Enter = zufällig): " PW
-  PW="$(echo "$PW" | tr -dc 'A-Za-z0-9')"
-  if [ -z "$PW" ]; then PW="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"; fi
-
+  if [ -z "$IP" ]; then IP="$(curl -fsS https://api.ipify.org 2>/dev/null | tr -d '[:space:]' || true)"; fi
+  if [ -z "$IP" ]; then echo "Konnte die öffentliche IP nicht ermitteln."; exit 1; fi
+  DOMAIN="$(echo "$IP" | tr '.' '-').sslip.io"
+  # gut lesbares Passwort (ohne l, 1, I, O, 0)
+  PW="$(python3 -c "import secrets; print(''.join(secrets.choice('abcdefghjkmnpqrstuvwxyz23456789') for _ in range(10)))")"
   cp .env.example .env
   chmod 600 .env
-  setv() { # Schlüssel=Wert in .env setzen (Wert wörtlich, ohne sed-Sonderzeichen-Probleme)
-    python3 - "$1" "$2" <<'PY'
-import sys, pathlib
-key, val = sys.argv[1], sys.argv[2]
-p = pathlib.Path(".env"); lines = p.read_text().splitlines()
-lines = [f"{key}={val}" if l.startswith(key + "=") else l for l in lines]
-p.write_text("\n".join(lines) + "\n")
-PY
-  }
-  setv DOMAIN "$DOMAIN"
-  setv APP_PASSWORD "$PW"
-  setv TWITCH_CLIENT_ID "$TWITCH_ID"
-  setv TWITCH_CLIENT_SECRET "$TWITCH_SECRET"
-  setv ANTHROPIC_API_KEY "$ANTHROPIC"
+  sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|; s|^APP_PASSWORD=.*|APP_PASSWORD=${PW}|" .env
 fi
 
 # 4) Starten
@@ -70,4 +50,5 @@ echo " Fertig! Öffne auf dem Handy:"
 echo "   https://${DOMAIN_NOW}"
 echo " Passwort: ${PW_NOW}"
 echo " (Das HTTPS-Zertifikat kann 1-2 Minuten dauern.)"
+echo " Danach in der App: Streamer -> Einstellungen -> Twitch-Schlüssel eintragen."
 echo "=============================================="

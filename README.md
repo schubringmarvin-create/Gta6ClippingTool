@@ -61,8 +61,10 @@ cd gta-clips
 sudo bash deploy/setup.sh
 ```
 
-Das Skript installiert Docker, legt Swap-Speicher an, fragt Twitch-Schlüssel und Passwort ab, erkennt die
-Adresse automatisch und startet die App. Fertig – weiter mit Schritt 6.
+Das Skript stellt keine Fragen: Es installiert Docker, legt Swap-Speicher an, erkennt die Adresse,
+erzeugt ein Passwort, startet die App und zeigt am Ende Adresse und Passwort an. Die Twitch-Schlüssel
+trägst du danach bequem in der App ein (**Streamer → Einstellungen**) – dort kannst du auch das Passwort ändern.
+Weiter mit Schritt 6.
 
 **Oder von Hand:**
 
