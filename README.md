@@ -53,6 +53,19 @@ ssh root@49.12.34.56
 
 ### 4. Installieren
 
+**Einfachster Weg (Skript fragt alles ab):**
+
+```bash
+git clone https://github.com/schubringmarvin-create/Gta6ClippingTool.git gta-clips
+cd gta-clips
+sudo bash deploy/setup.sh
+```
+
+Das Skript installiert Docker, legt Swap-Speicher an, fragt Twitch-Schlüssel und Passwort ab, erkennt die
+Adresse automatisch und startet die App. Fertig – weiter mit Schritt 6.
+
+**Oder von Hand:**
+
 Diese Befehle nacheinander einfügen:
 
 ```bash
