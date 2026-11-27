@@ -1,7 +1,9 @@
 """Web-Server: API für die Handy-App + Auslieferung der App selbst."""
 from __future__ import annotations
 
+import asyncio
 import csv
+import json
 import hashlib
 import hmac
 import io
@@ -16,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import captions, clipper
+from . import campaign_search, captions, clipper
 from .config import settings
 from .db import DB
 from .rules import campaign_from_json, check_clip, earnings
@@ -297,6 +299,85 @@ async def import_campaigns(request: Request) -> dict[str, int]:
             db.insert("campaigns", campaign_from_json(item))
             n += 1
     return {"imported": n}
+
+
+# ---------- Kampagnen-Suche ----------
+SEARCH: dict[str, Any] = {"status": "idle"}
+
+
+def _load_last_search() -> None:
+    raw = db.get_settings().get("campaign_search_last")
+    if raw:
+        try:
+            SEARCH.update(json.loads(raw))
+            if SEARCH.get("status") == "running":
+                SEARCH["status"] = "error"
+                SEARCH["error"] = "Suche wurde durch einen Neustart unterbrochen."
+        except ValueError:
+            pass
+
+
+_load_last_search()
+
+
+async def _search_job() -> None:
+    known = [c["name"] for c in db.all("SELECT name FROM campaigns")]
+    try:
+        result = await campaign_search.run_search(settings, watcher.twitch, known)
+        SEARCH.update({"status": "done", "error": "", "finished_at": time.time(), **result})
+    except Exception as exc:
+        logging.getLogger("campaign_search").exception("Suche fehlgeschlagen")
+        SEARCH.update({"status": "error", "error": str(exc)[:500], "finished_at": time.time()})
+    db.set_setting("campaign_search_last", json.dumps(SEARCH, ensure_ascii=False))
+
+
+@app.get("/api/campaign-search", dependencies=A)
+def get_search() -> dict[str, Any]:
+    existing = {(s["channel"] or "").lower() for s in db.all("SELECT channel FROM streamers WHERE platform='twitch'")}
+    out = dict(SEARCH)
+    out["results"] = [{**r, "already_added": r.get("twitch_channel") in existing} for r in SEARCH.get("results", [])]
+    out["has_api_key"] = bool(settings.anthropic_api_key)
+    return out
+
+
+@app.post("/api/campaign-search", dependencies=A)
+async def start_search() -> dict[str, Any]:
+    if not settings.anthropic_api_key:
+        raise HTTPException(400, "Für die Suche wird ein Anthropic-API-Key gebraucht – trag ihn unter Streamer → Einstellungen ein.")
+    if SEARCH.get("status") != "running":
+        SEARCH.clear()
+        SEARCH.update({"status": "running", "started_at": time.time(), "results": [], "live_gta6": []})
+        asyncio.create_task(_search_job())
+    return get_search()
+
+
+class AdoptIn(BaseModel):
+    index: int
+
+
+@app.post("/api/campaign-search/adopt", dependencies=A)
+async def adopt(body: AdoptIn) -> dict[str, Any]:
+    results = SEARCH.get("results") or []
+    if not 0 <= body.index < len(results):
+        raise HTTPException(404, "Ergebnis nicht gefunden")
+    r = results[body.index]
+    cid = db.insert("campaigns", {
+        "name": r["name"], "streamer": r.get("streamer") or r["twitch_channel"], "platforms": r.get("platforms", []),
+        "rate_per_1k": r.get("rate_per_1k", 0), "min_views": r.get("min_views", 0), "max_payout": r.get("max_payout", 0),
+        "min_seconds": r.get("min_seconds", 20), "max_seconds": r.get("max_seconds", 60),
+        "required_tags": r.get("required_tags", []), "required_mention": r.get("required_mention", ""),
+        "rules": r.get("rules", ""), "clips_allowed": 1, "url": r.get("url", "")})
+    existing = db.one("SELECT id FROM streamers WHERE platform='twitch' AND channel=?", (r["twitch_channel"],))
+    if existing:
+        db.update("streamers", existing["id"], {"campaign_id": cid, "active": 1})
+    else:
+        db.insert("streamers", {"platform": "twitch", "channel": r["twitch_channel"],
+                                "display_name": r.get("streamer") or r["twitch_channel"], "active": 1, "campaign_id": cid})
+    try:
+        await watcher.poll()
+    except Exception as exc:
+        watcher.last_error = str(exc)
+    return {"campaign_id": cid}
 
 
 # ---------- Clips ----------

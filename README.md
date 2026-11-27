@@ -15,6 +15,7 @@ Läuft auf einem kleinen Server statt auf dem Laptop – der Laptop muss also ni
 | **Clip** | Holt die Stelle aus dem Twitch-VOD (Fallback: Community-Clip) bzw. YouTube-Stream, schneidet auf 9:16 (20–60 s, nach Kampagne), Hook-Satz oben |
 | **Clips** | Video ansehen, Hook/Layout ändern und neu schneiden, Teilen-Knopf (öffnet direkt TikTok/Instagram/YouTube), Download, Clip aus beliebigem Link |
 | **Kampagnen** | Rate pro 1.000 Aufrufe, Mindest-Aufrufe, Plattformen, Pflicht-Tags, Pflicht-Erwähnung, Regeln. Import der `kampagnen.json` vom Laptop |
+| **Kampagnen suchen** | Claude durchsucht das Netz nach Clipping-Kampagnen für GTA-6-Streamer auf Twitch; die App markiert, wer gerade live GTA 6 spielt. „Übernehmen“ legt Kampagne + Streamer an (braucht Anthropic-API-Key) |
 | **Regel-Check** | Vor jedem Eintragen als „gepostet“: Clips erlaubt? Plattform? Länge? Pflicht-Tags/Erwähnung? Ohne Erlaubnis: Stopp |
 | **Tracker** | Posts, Aufrufe, geschätzte und ausgezahlte Einnahmen, Export als CSV-Tabelle |
 

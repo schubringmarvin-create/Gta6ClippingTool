@@ -1,5 +1,5 @@
 // Service Worker: App-Oberfläche offline starten; Daten immer frisch vom Server.
-const CACHE = "gta-clips-v2";
+const CACHE = "gta-clips-v3";
 const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/manifest.webmanifest", "/icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {

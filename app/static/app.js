@@ -111,7 +111,7 @@ async function renderLive() {
       b.disabled = false;
     })
   );
-  timer = setInterval(() => tab === "live" && !document.hidden && renderLive().catch(() => {}), 5000);
+  clearInterval(timer); timer = setInterval(() => tab === "live" && !document.hidden && renderLive().catch(() => {}), 5000);
 }
 
 function liveCard(x) {
@@ -140,6 +140,7 @@ async function renderClips() {
   view.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => { clipFilter = b.dataset.filter; renderClips(); }));
   view.querySelectorAll("[data-clip]").forEach((el) => el.addEventListener("click", () => openClip(clips.find((c) => c.id == el.dataset.clip))));
   $("#manual").addEventListener("click", manualClipSheet);
+  clearInterval(timer);
   if (busy) timer = setInterval(() => tab === "clips" && !document.hidden && renderClips().catch(() => {}), 6000);
 }
 
@@ -261,9 +262,20 @@ async function manualClipSheet() {
 }
 
 /* ---------- Kampagnen ---------- */
+let campSub = "mine";
+let liveOnly = false;
+function campTabs() {
+  return `<div class="seg"><button class="btn small ${campSub === "mine" ? "active" : ""}" data-sub="mine">Meine Kampagnen</button><button class="btn small ${campSub === "search" ? "active" : ""}" data-sub="search">🔍 Kampagnen suchen</button></div>`;
+}
+function bindCampTabs() {
+  view.querySelectorAll("[data-sub]").forEach((b) => b.addEventListener("click", () => { campSub = b.dataset.sub; renderCampaigns(); }));
+}
+
 async function renderCampaigns() {
+  if (campSub === "search") return renderCampaignSearch();
   campaigns = await api("/api/campaigns");
   view.innerHTML = `
+    ${campTabs()}
     <div class="btns" style="margin-bottom:12px"><button class="btn primary" id="k-new">+ Kampagne</button><button class="btn ghost" id="k-import">kampagnen.json importieren</button></div>
     <input type="file" id="k-file" accept=".json,application/json" class="hidden">
     ${campaigns.length ? campaigns.map((k) => `<div class="card" data-camp="${k.id}">
@@ -271,6 +283,7 @@ async function renderCampaigns() {
       <div class="muted small" style="margin-top:4px">${esc(k.streamer)} · <b style="color:var(--text)">${eur(k.rate_per_1k)}</b> / 1.000 Aufrufe${k.min_views ? " · ab " + k.min_views.toLocaleString("de-DE") + " Aufrufen" : ""}${k.platforms.length ? " · " + k.platforms.join(", ") : ""}</div>
       ${k.required_tags.length || k.required_mention ? `<div class="small" style="margin-top:6px">Pflicht: ${esc([...k.required_tags, k.required_mention].filter(Boolean).join(" "))}</div>` : ""}
     </div>`).join("") : '<div class="card muted">Noch keine Kampagnen. Lege sie an oder importiere die <b>kampagnen.json</b> vom Laptop.</div>'}`;
+  bindCampTabs();
   $("#k-new").addEventListener("click", () => campaignSheet());
   $("#k-import").addEventListener("click", () => $("#k-file").click());
   $("#k-file").addEventListener("change", async (e) => {
@@ -319,6 +332,50 @@ function campaignSheet(k = {}) {
     if (!confirm("Kampagne löschen?")) return;
     await api(`/api/campaigns/${k.id}`, { method: "DELETE" }); closeSheet(); renderCampaigns();
   });
+}
+
+async function renderCampaignSearch() {
+  const r = await api("/api/campaign-search");
+  const running = r.status === "running";
+  const results = (r.results || []).map((x, i) => ({ ...x, i })).filter((x) => !liveOnly || x.live_gta6);
+  const mins = r.started_at ? Math.max(0, Math.round((Date.now() / 1000 - r.started_at) / 60)) : 0;
+  view.innerHTML = `
+    ${campTabs()}
+    <div class="card stack">
+      <b>Clipping-Kampagnen im Netz finden</b>
+      <p class="muted small" style="margin:0">Claude sucht Kampagnen für GTA-6-Streamer auf Twitch (Rate pro 1.000 Aufrufe, Regeln, Pflicht-Tags). Danach prüft die App, wer gerade live GTA 6 spielt. Übernommene Streamer werden automatisch aus dem laufenden Stream geclippt.</p>
+      ${r.has_api_key ? "" : '<div class="card warn-box small" style="margin:0">Dafür wird ein Anthropic-API-Key gebraucht: Streamer → Einstellungen.</div>'}
+      <button class="btn primary" id="cs-go" ${running || !r.has_api_key ? "disabled" : ""}>${running ? `Suche läuft … (${mins} Min.)` : "Kampagnen suchen"}</button>
+      ${running ? '<p class="muted small" style="margin:0">Dauert meist 1–4 Minuten. Du kannst die App solange zumachen.</p>' : ""}
+      ${r.status === "error" ? `<div class="card warn-box small" style="margin:0">${esc(r.error)}</div>` : ""}
+      ${r.finished_at && !running ? `<p class="muted small" style="margin:0">Letzte Suche: ${fmtTime(r.finished_at)}${r.twitch_checked ? "" : " · Live-Prüfung aus (Twitch-Schlüssel fehlen)"}</p>` : ""}
+    </div>
+    ${(r.results || []).length ? `<label class="check" style="margin:0 0 12px"><input type="checkbox" id="cs-live" ${liveOnly ? "checked" : ""}> nur gerade live in GTA 6</label>` : ""}
+    ${results.map((x) => `<div class="card stack">
+      <div class="row between"><b class="ellipsis">${esc(x.name)}</b>${x.live_gta6 ? '<span class="pill bad">● LIVE GTA 6</span>' : x.live ? `<span class="pill warn">live: ${esc(x.game || "?")}</span>` : '<span class="pill">offline</span>'}</div>
+      <div class="small"><b>twitch.tv/${esc(x.twitch_channel)}</b>${x.twitch_exists === false ? ' <span class="pill bad">Kanal nicht gefunden</span>' : ""}${x.viewers ? " · " + x.viewers.toLocaleString("de-DE") + " Zuschauer" : ""}</div>
+      <div class="muted small"><b style="color:var(--text)">${eur(x.rate_per_1k)}</b> / 1.000 Aufrufe${x.min_views ? " · ab " + x.min_views.toLocaleString("de-DE") + " Aufrufen" : ""}${x.max_payout ? " · max. " + eur(x.max_payout) : ""}${x.platforms.length ? " · " + esc(x.platforms.join(", ")) : ""}</div>
+      ${x.required_tags.length || x.required_mention ? `<div class="small">Pflicht: ${esc([...x.required_tags, x.required_mention].filter(Boolean).join(" "))}</div>` : ""}
+      ${x.rules ? `<div class="small muted">${esc(x.rules)}</div>` : ""}
+      ${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noopener" style="color:var(--pink)">Regeln / Kampagne öffnen</a>` : ""}
+      ${x.already_added ? '<span class="pill ok" style="justify-self:start">schon auf deiner Liste</span>' : `<button class="btn small" data-adopt="${x.i}">Übernehmen & clippen</button>`}
+    </div>`).join("")}
+    ${r.status === "done" && !results.length ? `<div class="card muted">${liveOnly ? "Gerade ist keiner der gefundenen Streamer live in GTA 6." : "Keine passenden Kampagnen gefunden."}</div>` : ""}
+    ${(r.live_gta6 || []).length ? `<h2>Gerade live in GTA 6 auf Twitch</h2><div class="card stack small">${r.live_gta6.slice(0, 15).map((s) => `<div class="row between"><span class="ellipsis">${esc(s.name || s.channel)}</span><span class="muted">${s.viewers.toLocaleString("de-DE")}</span></div>`).join("")}<p class="muted" style="margin:0">Nur clippen, wenn es für den Streamer eine Kampagne gibt oder er Clips erlaubt.</p></div>` : ""}`;
+  bindCampTabs();
+  $("#cs-go")?.addEventListener("click", async () => {
+    try { await api("/api/campaign-search", { method: "POST" }); renderCampaignSearch(); } catch (e) { toast(e.message, 5000); }
+  });
+  $("#cs-live")?.addEventListener("change", (e) => { liveOnly = e.target.checked; renderCampaignSearch(); });
+  view.querySelectorAll("[data-adopt]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await api("/api/campaign-search/adopt", { method: "POST", body: { index: Number(b.dataset.adopt) } });
+      toast("Übernommen – wird jetzt beobachtet und geclippt"); renderCampaignSearch();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  }));
+  clearInterval(timer);
+  if (running) timer = setInterval(() => tab === "campaigns" && campSub === "search" && !document.hidden && renderCampaignSearch().catch(() => {}), 5000);
 }
 
 /* ---------- Tracker ---------- */

@@ -59,3 +59,17 @@ class Twitch:
         clips = await self._get("clips", [("broadcaster_id", broadcaster_id), ("started_at", iso(start)),
                                           ("ended_at", iso(end)), ("first", "20")])
         return sorted(clips, key=lambda c: c.get("view_count", 0), reverse=True)
+
+    async def users(self, logins: list[str]) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(logins), 100):
+            for u in await self._get("users", [("login", l) for l in logins[i:i + 100]]):
+                out[u["login"].lower()] = u
+        return out
+
+    async def game_id(self, name: str) -> str | None:
+        games = await self._get("games", [("name", name)])
+        return games[0]["id"] if games else None
+
+    async def streams_by_game(self, game_id: str, first: int = 100) -> list[dict[str, Any]]:
+        return await self._get("streams", [("game_id", game_id), ("first", str(first))])
