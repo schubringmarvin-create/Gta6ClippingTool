@@ -284,7 +284,7 @@ async function renderCampaigns() {
       ${k.required_tags.length || k.required_mention ? `<div class="small" style="margin-top:6px">Pflicht: ${esc([...k.required_tags, k.required_mention].filter(Boolean).join(" "))}</div>` : ""}
     </div>`).join("") : '<div class="card muted">Noch keine Kampagnen. Lege sie an oder importiere die <b>kampagnen.json</b> vom Laptop.</div>'}`;
   bindCampTabs();
-  $("#k-new").addEventListener("click", () => campaignSheet());
+  $("#k-new").addEventListener("click", linkSheet);
   $("#k-import").addEventListener("click", () => $("#k-file").click());
   $("#k-file").addEventListener("change", async (e) => {
     const f = e.target.files[0];
@@ -297,12 +297,45 @@ async function renderCampaigns() {
   view.querySelectorAll("[data-camp]").forEach((el) => el.addEventListener("click", () => campaignSheet(campaigns.find((k) => k.id == el.dataset.camp))));
 }
 
-function campaignSheet(k = {}) {
+function linkSheet() {
+  openSheet(`<div class="stack">
+    <h2>Kampagnenlink</h2>
+    <p class="muted small" style="margin:0">Link der Kampagne einfügen (z. B. von Content Rewards, Whop, heistclips). Den Rest füllt die App aus – du prüfst danach nur noch.</p>
+    <input id="l-url" placeholder="https://…" inputmode="url" autocapitalize="off" autocomplete="off">
+    <button class="btn primary" id="l-go">Weiter</button>
+    <p id="l-msg" class="muted small" style="margin:0"></p>
+    <button class="btn ghost small" id="l-manual">Ohne Link von Hand anlegen</button>
+    <button class="btn ghost" onclick="closeSheet()">Abbrechen</button></div>`);
+  $("#l-manual").addEventListener("click", () => campaignSheet());
+  $("#l-go").addEventListener("click", async () => {
+    const url = $("#l-url").value.trim();
+    if (!url) return toast("Bitte einen Link einfügen");
+    $("#l-go").disabled = true;
+    $("#l-msg").textContent = "Seite wird gelesen …";
+    try {
+      const r = await api("/api/campaigns/from-link", { method: "POST", body: { url } });
+      const labels = { name: "Name", twitch_channel: "Twitch-Kanal", rate_per_1k: "Rate", min_views: "Mindest-Aufrufe",
+        max_payout: "Maximum", platforms: "Plattformen" };
+      const missing = Object.keys(labels).filter((k) => !r.found.includes(k)).map((k) => labels[k]);
+      let note = r.method === "claude" ? "Von Claude ausgefüllt – bitte kurz prüfen." : "Automatisch erkannt – bitte prüfen.";
+      if (r.page_was_empty) note = "Die Seite lädt ihre Daten erst im Browser, deshalb konnte kaum etwas gelesen werden. Bitte die fehlenden Felder ergänzen (Angaben stehen auf der Kampagnenseite).";
+      if (missing.length && !r.page_was_empty) note += " Nicht gefunden: " + missing.join(", ") + ".";
+      campaignSheet({ ...r.fields, clips_allowed: 1 }, note);
+    } catch (e) {
+      $("#l-msg").textContent = e.message;
+      $("#l-go").disabled = false;
+    }
+  });
+}
+
+function campaignSheet(k = {}, note = "") {
   const v = (x, d = "") => esc(x ?? d);
   openSheet(`<div class="stack">
     <h2>${k.id ? "Kampagne bearbeiten" : "Neue Kampagne"}</h2>
+    ${note ? `<div class="card warn-box small" style="margin:0">${esc(note)}</div>` : ""}
     <label>Name<input id="k-name" value="${v(k.name)}"></label>
     <label>Streamer<input id="k-streamer" value="${v(k.streamer)}"></label>
+    ${k.id ? "" : `<label>Twitch-Kanal (wird automatisch beobachtet)<input id="k-twitch" value="${v(k.twitch_channel)}" placeholder="z. B. darealboeshi" autocapitalize="off"></label>`}
     <label class="check"><input type="checkbox" id="k-allowed" ${k.clips_allowed === 0 ? "" : "checked"}> Streamer erlaubt Clips</label>
     <div class="row"><label class="grow">$ pro 1.000 Aufrufe<input id="k-rate" type="number" step="0.01" inputmode="decimal" value="${v(k.rate_per_1k, 1)}"></label><label class="grow">Mindest-Aufrufe<input id="k-min" type="number" inputmode="numeric" value="${v(k.min_views, 0)}"></label></div>
     <div class="row"><label class="grow">Max. Auszahlung/Clip<input id="k-cap" type="number" step="0.01" inputmode="decimal" value="${v(k.max_payout, 0)}"></label><label class="grow">Länge (s) von–bis<div class="row"><input id="k-smin" type="number" value="${v(k.min_seconds, 20)}"><input id="k-smax" type="number" value="${v(k.max_seconds, 60)}"></div></label></div>
@@ -322,6 +355,7 @@ function campaignSheet(k = {}) {
       min_seconds: Number($("#k-smin").value) || 0, max_seconds: Number($("#k-smax").value) || 0,
       platforms: $("#k-plat").value.split(","), required_tags: $("#k-tags").value.split(/[\s,]+/),
       required_mention: $("#k-mention").value.trim(), rules: $("#k-rules").value, url: $("#k-url").value.trim(),
+      twitch_channel: $("#k-twitch") ? $("#k-twitch").value.trim() : "",
     };
     try {
       await api(k.id ? `/api/campaigns/${k.id}` : "/api/campaigns", { method: k.id ? "PUT" : "POST", body });

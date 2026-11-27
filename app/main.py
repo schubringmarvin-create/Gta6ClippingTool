@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import campaign_search, captions, clipper
+from . import campaign_search, captions, clipper, link_import
 from .config import settings
 from .db import DB
 from .rules import campaign_from_json, check_clip, earnings
@@ -255,10 +255,23 @@ class CampaignIn(BaseModel):
     rules: str = ""
     clips_allowed: bool = True
     url: str = ""
+    twitch_channel: str = ""
+
+
+def _link_streamer(channel: str, cid: int, display: str = "") -> None:
+    channel = channel.strip().rstrip("/").split("/")[-1].lstrip("@").lower()
+    if not channel:
+        return
+    existing = db.one("SELECT id FROM streamers WHERE platform='twitch' AND channel=?", (channel,))
+    if existing:
+        db.update("streamers", existing["id"], {"campaign_id": cid, "active": 1})
+    else:
+        db.insert("streamers", {"platform": "twitch", "channel": channel, "active": 1, "campaign_id": cid,
+                                "display_name": display or channel})
 
 
 def _campaign_values(body: CampaignIn) -> dict[str, Any]:
-    v = body.model_dump()
+    v = body.model_dump(exclude={"twitch_channel"})
     v["clips_allowed"] = int(v["clips_allowed"])
     v["platforms"] = [p.strip().lower() for p in v["platforms"] if p.strip()]
     v["required_tags"] = [t.strip() for t in v["required_tags"] if t.strip()]
@@ -271,8 +284,30 @@ def list_campaigns() -> list[dict[str, Any]]:
 
 
 @app.post("/api/campaigns", dependencies=A)
-def add_campaign(body: CampaignIn) -> dict[str, Any]:
-    return db.get("campaigns", db.insert("campaigns", _campaign_values(body)))  # type: ignore[return-value]
+async def add_campaign(body: CampaignIn) -> dict[str, Any]:
+    cid = db.insert("campaigns", _campaign_values(body))
+    if body.twitch_channel:
+        _link_streamer(body.twitch_channel, cid, body.streamer)
+        try:
+            await watcher.poll()
+        except Exception as exc:
+            watcher.last_error = str(exc)
+    return db.get("campaigns", cid)  # type: ignore[return-value]
+
+
+class LinkIn(BaseModel):
+    url: str
+
+
+@app.post("/api/campaigns/from-link", dependencies=A)
+async def campaign_from_link(body: LinkIn) -> dict[str, Any]:
+    url = body.url.strip()
+    if not url.startswith("http"):
+        raise HTTPException(400, "Bitte einen vollständigen Link einfügen (beginnt mit https://)")
+    try:
+        return await link_import.campaign_from_link(url, settings.anthropic_api_key)
+    except Exception as exc:
+        raise HTTPException(400, f"Seite konnte nicht geladen werden: {exc}")
 
 
 @app.put("/api/campaigns/{cid}", dependencies=A)
@@ -300,14 +335,8 @@ async def import_campaigns(request: Request) -> dict[str, int]:
         cid = db.insert("campaigns", campaign_from_json(item))
         n += 1
         # Mit Twitch-Kanal: Streamer gleich anlegen bzw. mit der Kampagne verknüpfen
-        channel = str(item.get("twitch_channel") or "").strip().rstrip("/").split("/")[-1].lstrip("@").lower()
-        if channel:
-            existing = db.one("SELECT id FROM streamers WHERE platform='twitch' AND channel=?", (channel,))
-            if existing:
-                db.update("streamers", existing["id"], {"campaign_id": cid})
-            else:
-                db.insert("streamers", {"platform": "twitch", "channel": channel, "active": 1, "campaign_id": cid,
-                                        "display_name": str(item.get("streamer") or channel)})
+        if item.get("twitch_channel"):
+            _link_streamer(str(item["twitch_channel"]), cid, str(item.get("streamer") or ""))
     return {"imported": n}
 
 
