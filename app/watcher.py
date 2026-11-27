@@ -48,6 +48,7 @@ class Watcher:
         self.db = db
         self.s = settings
         self.on_clip_ready = None  # async callback(clip_id), z. B. Push-Benachrichtigung
+        self._last_backfill = 0.0
         self.twitch = Twitch(settings.twitch_client_id, settings.twitch_client_secret) if settings.twitch_ready else None
         self.live: dict[int, dict[str, Any]] = {}
         self.detectors: dict[int, HypeDetector] = {}
@@ -84,6 +85,49 @@ class Watcher:
     async def stop(self) -> None:
         for t in [*self.tasks, *self.chat_tasks.values()]:
             t.cancel()
+
+    # ---------- Zeitplan ----------
+    def _record_sessions(self, live_now: dict[int, dict[str, Any]], active_ids: set[int]) -> None:
+        now = time.time()
+        for sid, info in live_now.items():
+            started = float(info.get("started_at") or now)
+            near = self.db.one("SELECT id FROM live_sessions WHERE streamer_id=? AND ABS(started_at-?) < 600",
+                               (sid, started))
+            if near:
+                self.db.execute("UPDATE live_sessions SET ended_at=NULL WHERE id=?", (near["id"],))
+            else:
+                self.db.execute("INSERT OR IGNORE INTO live_sessions (streamer_id, started_at, source) VALUES (?,?, 'live')",
+                                (sid, started))
+        for sid in active_ids - set(live_now):
+            self.db.execute("UPDATE live_sessions SET ended_at=? WHERE streamer_id=? AND ended_at IS NULL", (now, sid))
+
+    async def backfill_vods(self) -> int:
+        """Vergangene Streams aus den Twitch-VODs nachtragen (für den Zeitplan)."""
+        if not self.twitch:
+            return 0
+        from .schedule import parse_duration
+        streamers = self.db.all("SELECT * FROM streamers WHERE platform='twitch'")
+        if not streamers:
+            return 0
+        added = 0
+        try:
+            users = await self.twitch.users([s["channel"] for s in streamers])
+            for s in streamers:
+                u = users.get(s["channel"].lower())
+                if not u:
+                    continue
+                for v in await self.twitch.archives(u["id"], 30):
+                    start = parse_time(v["created_at"])
+                    end = start + parse_duration(v.get("duration", ""))
+                    if self.db.one("SELECT id FROM live_sessions WHERE streamer_id=? AND ABS(started_at-?) < 1800",
+                                   (s["id"], start)):
+                        continue
+                    self.db.execute("INSERT OR IGNORE INTO live_sessions (streamer_id, started_at, ended_at, source) "
+                                    "VALUES (?,?,?, 'vod')", (s["id"], start, end))
+                    added += 1
+        except Exception as exc:
+            log.warning("VOD-Nachtrag fehlgeschlagen: %s", exc)
+        return added
 
     # ---------- Aufräumen ----------
     def remove_clip_files(self, clip: dict[str, Any], keep_final: bool = False) -> None:
@@ -191,6 +235,10 @@ class Watcher:
                 self.chat_tasks.pop(sid).cancel()
                 self.live.pop(sid, None)
                 self.chat_logs.pop(sid, None)
+        self._record_sessions(live_now, active_ids)
+        if time.time() - self._last_backfill > 6 * 3600:
+            self._last_backfill = time.time()
+            asyncio.create_task(self.backfill_vods())
         self.last_poll = time.time()
 
     async def _chat(self, streamer: dict[str, Any], info: dict[str, Any]) -> None:
@@ -344,11 +392,25 @@ class Watcher:
             start = min(start + trim_s, start + length - new_len)
             length = new_len
 
-        if not words and captions.whisper_available():
-            transcript, words = await asyncio.to_thread(captions.transcribe, raw, self.s.whisper_model,
-                                                        self.s.caption_language)
-            self.db.update("clips", clip_id, {"words": words, "transcript": transcript})
-        clip_words = [w for w in words if w["e"] > start and w["s"] < start + length]
+        want_captions = bool(clip.get("captions")) or captions.whisper_available()
+        caption_note = ""
+        if want_captions and not captions.library_available():
+            caption_note = "Untertitel nicht verfügbar (Baustein fehlt auf dem Server)."
+        elif not want_captions:
+            pass
+        elif not words:
+            try:
+                transcript, words = await asyncio.to_thread(
+                    captions.transcribe, raw, self.s.whisper_model, self.s.caption_language,
+                    captions.whisper_available())  # per Knopfdruck: Modell danach wieder freigeben
+                self.db.update("clips", clip_id, {"words": words, "transcript": transcript})
+                if not words:
+                    caption_note = "Keine Sprache erkannt – Clip ohne Untertitel."
+            except Exception as exc:
+                log.warning("Untertitel fehlgeschlagen: %s", exc)
+                caption_note = f"Untertitel fehlgeschlagen: {str(exc)[:120]}"
+                words = []
+        clip_words = [w for w in words if w["e"] > start and w["s"] < start + length] if want_captions else []
         clip_text = " ".join(w["w"] for w in clip_words) or transcript
 
         hook, caption = clip["hook"], clip["caption"]
@@ -367,6 +429,7 @@ class Watcher:
         thumb = await clipper.thumbnail(out, self.s.clips_dir / f"clip_{clip_id}.jpg")
         duration = await clipper.probe_duration(out)
         note = f"Hinweis: nur {duration:.0f}s Material (Kampagne will mind. {min_s}s)." if duration < min_s else ""
+        note = " ".join(x for x in (note, caption_note) if x)
         self.db.update("clips", clip_id, {"status": "ready", "file": out.name, "thumb": thumb.name,
                                           "duration": round(duration, 1), "hook": hook, "caption": caption,
                                           "error": note, "seen": 0})

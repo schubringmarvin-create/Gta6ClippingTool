@@ -49,6 +49,9 @@ class Twitch:
                 out[s["user_login"].lower()] = s
         return out
 
+    async def archives(self, user_id: str, first: int = 20) -> list[dict[str, Any]]:
+        return await self._get("videos", [("user_id", user_id), ("type", "archive"), ("first", str(first))])
+
     async def latest_archive(self, user_id: str) -> dict[str, Any] | None:
         videos = await self._get("videos", [("user_id", user_id), ("type", "archive"), ("first", "1")])
         return videos[0] if videos else None

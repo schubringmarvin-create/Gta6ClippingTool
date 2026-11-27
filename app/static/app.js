@@ -102,7 +102,7 @@ async function renderLive() {
 async function updateLive() {
   const top = $("#live-top");
   if (!top) return;
-  const s = await api("/api/status");
+  const [s, sched] = await Promise.all([api("/api/status"), getSchedule()]);
   const live = s.streamers.filter((x) => x.live);
   const off = s.streamers.filter((x) => !x.live);
   const c = s.clips || {};
@@ -114,7 +114,7 @@ async function updateLive() {
       <div class="stat"><b>${c.ready || 0}</b><span>Clips fertig</span></div>
     </div>`;
   $("#live-bottom").innerHTML = `
-    ${off.length ? `<h2>Offline</h2><div class="card stack">${off.map((x) => `<div class="row"><span class="dot"></span><span class="grow ellipsis">${esc(x.display_name || x.channel)}</span><span class="pill">${x.platform}</span>${x.active ? "" : '<span class="pill warn">pausiert</span>'}</div>`).join("")}</div>` : ""}
+    ${off.length ? `<h2>Offline</h2><div class="card stack">${off.map((x) => { const sc = sched.find((y) => y.id === x.id); return `<div class="row" style="align-items:flex-start"><span class="dot" style="margin-top:6px"></span><div class="grow" style="min-width:0"><div class="row between"><span class="ellipsis">${esc(x.display_name || x.channel)}</span>${x.active ? `<span class="pill">${x.platform}</span>` : '<span class="pill warn">pausiert</span>'}</div>${sc && sc.streams ? `<div class="muted small">${esc(sc.summary)}${sc.next ? " · nächster Stream ca. <b style=\"color:var(--text)\">" + fmtNext(sc.next) + "</b>" : ""}</div>` : ""}</div></div>`; }).join("")}</div>` : ""}
     <h2>Letzte Hype-Momente</h2>
     ${s.events.length ? `<div class="card stack">${s.events.map((e) => `<div class="row between small"><span>${esc(e.channel || "?")} · ${fmtTime(e.ts)}</span><span class="pill ${e.score ? "ok" : ""}">${e.keywords?.[0] === "manuell" ? "manuell" : e.rate + "/s (normal " + e.baseline + ")"}</span></div>`).join("")}</div>` : '<div class="card muted small">Noch keine.</div>'}
     <p class="muted small">Letzte Abfrage: ${fmtTime(s.last_poll) || "–"}</p>`;
@@ -295,7 +295,8 @@ function openClip(c) {
         <label class="grow">Ende kürzen (Sek.)<input id="c-trim-e" type="number" min="0" step="1" inputmode="numeric" value="${c.trim_end || 0}"></label></div>
       <label>Layout<select id="c-layout"><option value="blur" ${c.layout !== "crop" ? "selected" : ""}>Ganzes Bild + unscharfer Hintergrund</option><option value="crop" ${c.layout === "crop" ? "selected" : ""}>Mitte zuschneiden (Vollbild)</option></select></label>
       <label>Kampagne<select id="c-camp">${campaignOptions(c.campaign_id)}</select></label>
-      <button class="btn" id="c-rerender">Mit neuem Hook / Länge / Layout neu schneiden</button>
+      <label class="check"><input type="checkbox" id="c-capt" ${c.captions ? "checked" : ""}> 💬 Untertitel einbrennen <span class="muted small">(beim nächsten Neu-Schneiden, dauert ca. 1–2 Min. länger)</span></label>
+      <button class="btn" id="c-rerender">Neu schneiden (Hook / Länge / Layout / Untertitel)</button>
       ${c.video_url ? `<div class="btns"><button class="btn primary" id="c-share">Teilen / Posten</button><a class="btn ghost" href="${c.video_url}" download="gta-clip-${c.id}.mp4" style="text-align:center;text-decoration:none">Download</a></div>` : ""}
       <h2>Posten mit Regel-Check</h2>
       <label>Plattform<select id="c-platform">${PLATFORMS.map((p) => `<option>${p}</option>`).join("")}</select></label>
@@ -311,6 +312,7 @@ function openClip(c) {
   const save = () => api(`/api/clips/${c.id}`, { method: "PATCH", body: {
     hook: $("#c-hook").value, layout: $("#c-layout").value,
     trim_start: Math.max(0, Number($("#c-trim-s").value) || 0), trim_end: Math.max(0, Number($("#c-trim-e").value) || 0),
+    captions: $("#c-capt").checked ? 1 : 0,
     campaign_id: $("#c-camp").value ? Number($("#c-camp").value) : null, caption: $("#c-caption").value } });
   const runCheck = async () => {
     await save();
@@ -561,14 +563,38 @@ async function renderCampaignSearch() {
 }
 
 /* ---------- Tracker ---------- */
+let statsBy = "by_streamer";
+function statsHtml(st) {
+  const list = st[statsBy] || [];
+  const max = Math.max(1, ...list.map((e) => e.estimate || e.views / 1000));
+  return `<h2>Auswertung</h2>
+    <div class="card stack">
+      <div class="small">Letzte 7 Tage: <b>${st.week.posts}</b> Posts · <b>${st.week.views.toLocaleString("de-DE")}</b> Aufrufe</div>
+      <div class="seg" style="margin:0"><button class="btn small ${statsBy === "by_streamer" ? "active" : ""}" data-by="by_streamer">nach Streamer</button><button class="btn small ${statsBy === "by_campaign" ? "active" : ""}" data-by="by_campaign">nach Kampagne</button></div>
+      ${list.length ? list.map((e, i) => `<div class="stat-row">
+        <div class="row between small"><b class="ellipsis">${i === 0 ? "🏆 " : ""}${esc(e.name)}</b><span><b>${eur(e.estimate)}</b>${e.paid ? ` <span class="muted">(${eur(e.paid)} ausgezahlt)</span>` : ""}</span></div>
+        <div class="meter" style="margin-top:4px"><div style="width:${Math.max(3, ((e.estimate || e.views / 1000) / max) * 100)}%"></div></div>
+        <div class="muted small" style="margin-top:2px">${e.posts} Posts · ${e.views.toLocaleString("de-DE")} Aufrufe · Ø ${e.avg_views.toLocaleString("de-DE")} pro Post${e.clips !== undefined ? ` · ${e.clips} Clips fertig` : ""}</div>
+      </div>`).join("") : '<div class="muted small">Noch keine Posts – sobald du Clips als gepostet einträgst und Aufrufe nachträgst, siehst du hier, was sich lohnt.</div>'}
+    </div>
+    ${st.top.length ? `<h2>Beste Clips</h2><div class="card stack">${st.top.map((c, i) => `<div class="row">
+      <b style="width:22px">${["🥇", "🥈", "🥉", "4.", "5."][i]}</b>
+      ${c.thumb_url ? `<img src="${c.thumb_url}" alt="" style="width:36px;aspect-ratio:9/16;object-fit:cover;border-radius:6px">` : ""}
+      <div class="grow" style="min-width:0"><div class="small ellipsis"><b>${esc(c.channel || "Clip")}</b> · ${esc(c.platform)}</div><div class="muted small ellipsis">${esc(c.hook || "")}</div></div>
+      <div class="small" style="text-align:right"><b>${Number(c.views).toLocaleString("de-DE")}</b><div class="muted">${eur(c.estimate)}</div></div>
+    </div>`).join("")}</div>` : ""}`;
+}
+
 async function renderTracker() {
-  const t = await api("/api/tracker");
+  const [t, st] = await Promise.all([api("/api/tracker"), api("/api/stats")]);
   view.innerHTML = `
     <div class="stats">
       <div class="stat"><b>${t.total_views.toLocaleString("de-DE")}</b><span>Aufrufe</span></div>
       <div class="stat"><b>${eur(t.total_estimate)}</b><span>geschätzt</span></div>
       <div class="stat"><b>${eur(t.total_paid)}</b><span>ausgezahlt</span></div>
     </div>
+    <div id="stats">${statsHtml(st)}</div>
+    <h2>Alle Posts</h2>
     <a class="btn ghost small" href="/api/tracker.csv" style="display:block;text-align:center;text-decoration:none;margin-bottom:12px">Als Tabelle (CSV) herunterladen</a>
     ${t.posts.length ? t.posts.map((p) => `<div class="card stack" data-post="${p.id}">
       <div class="row between"><b class="ellipsis">${esc(p.channel || "Clip")} · ${esc(p.platform)}</b><span class="muted small">${fmtTime(p.posted_at)}</span></div>
@@ -576,6 +602,10 @@ async function renderTracker() {
       <div class="row"><label class="grow">Aufrufe<input type="number" inputmode="numeric" data-views value="${p.views || 0}"></label><label class="grow">Ausgezahlt $<input type="number" step="0.01" inputmode="decimal" data-paid value="${p.paid ?? ""}"></label></div>
       <div class="row between small"><span>Schätzung: <b>${eur(p.estimate)}</b></span><button class="btn small" data-save>Speichern</button></div>
     </div>`).join("") : '<div class="card muted">Noch nichts gepostet. Trag Clips nach dem Posten über „Regeln prüfen & als gepostet eintragen“ ein.</div>'}`;
+  const bindBy = () => view.querySelectorAll("[data-by]").forEach((b) => b.addEventListener("click", () => {
+    statsBy = b.dataset.by; $("#stats").innerHTML = statsHtml(st); bindBy();
+  }));
+  bindBy();
   view.querySelectorAll("[data-post]").forEach((el) =>
     $("[data-save]", el).addEventListener("click", async () => {
       const paid = $("[data-paid]", el).value;
@@ -587,9 +617,9 @@ async function renderTracker() {
 
 /* ---------- Streamer ---------- */
 async function renderStreamers() {
-  let cfg, upd;
-  [streamers, campaigns, cfg, upd] = await Promise.all([api("/api/streamers"), api("/api/campaigns"), api("/api/settings"),
-    api("/api/update").catch(() => ({}))]);
+  let cfg, upd, sched;
+  [streamers, campaigns, cfg, upd, sched] = await Promise.all([api("/api/streamers"), api("/api/campaigns"), api("/api/settings"),
+    api("/api/update").catch(() => ({})), getSchedule()]);
   view.innerHTML = `
     <div class="card stack">
       <b>Streamer hinzufügen</b>
@@ -598,12 +628,16 @@ async function renderStreamers() {
       <button class="btn primary" id="s-add">Hinzufügen</button>
       <p class="muted small" style="margin:0">Nur Streamer, die Clips erlauben. Bei YouTube den @Handle eintragen.</p>
     </div>
-    ${streamers.map((s) => `<div class="card stack" data-s="${s.id}">
+    <div class="row between"><h2 style="margin:6px 0">Deine Streamer</h2><button class="btn small ghost" id="sched-refresh">🗓️ Zeitpläne aktualisieren</button></div>
+    ${streamers.map((s) => { const sc = sched.find((y) => y.id === s.id); return `<div class="card stack" data-s="${s.id}">
       <div class="row between"><b class="ellipsis">${esc(s.display_name || s.channel)}</b><span class="pill">${s.platform}</span></div>
+      ${sc && sc.streams ? `<div class="small"><b>🗓️ ${esc(sc.summary)}</b><span class="muted"> · ca. ${sc.hours_per_week} Std./Woche${sc.next && !sc.live ? " · nächster Stream ca. " + fmtNext(sc.next) : ""}</span></div>
+      <details><summary class="small muted">Wochenübersicht anzeigen</summary>${heatmapHtml(sc.heat)}<div class="muted small">Je kräftiger, desto öfter live (letzte 4 Wochen).</div></details>` :
+      '<div class="muted small">🗓️ Zeitplan: noch keine Daten – füllt sich mit der Zeit bzw. über „Zeitpläne aktualisieren“.</div>'}
       <label class="check"><input type="checkbox" data-active ${s.active ? "checked" : ""}> beobachten</label>
       <label>Kampagne<select data-camp>${campaignOptions(s.campaign_id)}</select></label>
       <button class="btn danger small" data-del>Entfernen</button>
-    </div>`).join("")}
+    </div>`; }).join("")}
     <h2>Einstellungen</h2>
     <div class="card stack">
       <span class="pill ${cfg.twitch_ready ? "ok" : "bad"}" style="justify-self:start">${cfg.twitch_ready ? "Twitch verbunden" : "Twitch-Schlüssel fehlen"}</span>
@@ -691,6 +725,10 @@ async function renderStreamers() {
       toast("Hinzugefügt"); renderStreamers();
     } catch (e) { toast(e.message); }
   });
+  $("#sched-refresh").addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Lädt …";
+    await getSchedule(true); renderStreamers();
+  });
   view.querySelectorAll("[data-s]").forEach((el) => {
     const id = el.dataset.s;
     $("[data-active]", el).addEventListener("change", (e) => api(`/api/streamers/${id}`, { method: "PATCH", body: { active: e.target.checked } }).then(() => toast("Gespeichert")));
@@ -701,6 +739,31 @@ async function renderStreamers() {
     });
   });
   $("#logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }); showLogin(); });
+}
+
+/* ---------- Zeitplan ---------- */
+let schedCache = { at: 0, data: [] };
+async function getSchedule(refresh = false) {
+  if (!refresh && Date.now() - schedCache.at < 5 * 60 * 1000) return schedCache.data;
+  schedCache = { at: Date.now(), data: await api("/api/schedule" + (refresh ? "?refresh=1" : "")).catch(() => []) };
+  return schedCache.data;
+}
+const DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+function fmtNext(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000), now = new Date();
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  const day = d.toDateString() === now.toDateString() ? "heute" : d.toDateString() === tomorrow.toDateString() ? "morgen" : DAYS[(d.getDay() + 6) % 7];
+  return `${day} ${d.getHours()} Uhr`;
+}
+function heatmapHtml(heat) {
+  const nowD = new Date(), today = (nowD.getDay() + 6) % 7, hour = nowD.getHours();
+  let html = '<div class="heat"><span></span>' + Array.from({ length: 24 }, (_, h) => `<span class="hl">${h % 6 === 0 ? h : ""}</span>`).join("");
+  heat.forEach((row, d) => {
+    html += `<span class="dl">${DAYS[d]}</span>` + row.map((v, h) =>
+      `<span class="hc${d === today && h === hour ? " now" : ""}" style="background:rgba(255,61,139,${v ? 0.15 + v * 0.85 : 0.06})" title="${DAYS[d]} ${h} Uhr: ${Math.round(v * 100)}%"></span>`).join("");
+  });
+  return html + "</div>";
 }
 
 /* ---------- Push-Benachrichtigungen ---------- */

@@ -1,9 +1,6 @@
 services:
   app:
-    build:
-      context: .
-      args:
-        ENABLE_CAPTIONS: ${ENABLE_CAPTIONS:-0}
+    build: .
     env_file: .env
     volumes:
       - ./data:/data

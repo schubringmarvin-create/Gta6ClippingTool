@@ -9,15 +9,19 @@ from typing import Any
 log = logging.getLogger("captions")
 
 
-def whisper_available() -> bool:
-    from .config import settings
-    if not settings.enable_captions:
-        return False
+def library_available() -> bool:
+    """Ist faster-whisper installiert (für Untertitel per Knopfdruck)?"""
     try:
         import faster_whisper  # noqa: F401
         return True
     except ImportError:
         return False
+
+
+def whisper_available() -> bool:
+    """Automatische Untertitel für jeden Clip (nur mit ENABLE_CAPTIONS=1)."""
+    from .config import settings
+    return settings.enable_captions and library_available()
 
 
 @lru_cache(maxsize=1)
@@ -26,20 +30,28 @@ def _model(name: str):
     return WhisperModel(name, device="cpu", compute_type="int8")
 
 
-def transcribe(path: Path, model: str = "small", language: str = "") -> tuple[str, list[dict[str, Any]]]:
-    """Gibt (Text, Wörter mit Zeiten) zurück. Leer, wenn faster-whisper fehlt."""
-    if not whisper_available():
+def transcribe(path: Path, model: str = "small", language: str = "", keep_loaded: bool = True
+               ) -> tuple[str, list[dict[str, Any]]]:
+    """Gibt (Text, Wörter mit Zeiten) zurück. Leer, wenn faster-whisper fehlt.
+    keep_loaded=False gibt das Modell danach wieder frei (spart dauerhaft RAM)."""
+    if not library_available():
         return "", []
-    segments, _ = _model(model).transcribe(str(path), language=language or None, word_timestamps=True,
-                                           vad_filter=True)
-    words: list[dict[str, Any]] = []
-    texts: list[str] = []
-    for seg in segments:
-        texts.append(seg.text.strip())
-        for w in seg.words or []:
-            if w.word.strip():
-                words.append({"w": w.word.strip(), "s": round(w.start, 2), "e": round(w.end, 2)})
-    return " ".join(texts).strip(), words
+    try:
+        segments, _ = _model(model).transcribe(str(path), language=language or None, word_timestamps=True,
+                                               vad_filter=True)
+        words: list[dict[str, Any]] = []
+        texts: list[str] = []
+        for seg in segments:
+            texts.append(seg.text.strip())
+            for w in seg.words or []:
+                if w.word.strip():
+                    words.append({"w": w.word.strip(), "s": round(w.start, 2), "e": round(w.end, 2)})
+        return " ".join(texts).strip(), words
+    finally:
+        if not keep_loaded:
+            import gc
+            _model.cache_clear()
+            gc.collect()
 
 
 def _ts(t: float) -> str:

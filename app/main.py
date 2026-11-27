@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import campaign_search, captions, clipper, link_import, push
+from . import campaign_search, captions, clipper, link_import, push, schedule
 from .config import settings
 from .db import DB
 from .rules import campaign_from_json, check_clip, earnings
@@ -154,7 +154,7 @@ def status() -> dict[str, Any]:
     warnings = []
     if not settings.twitch_ready:
         warnings.append("Twitch-Schlüssel fehlen – trag sie unter Streamer → Einstellungen ein, sonst werden Twitch-Streamer nicht beobachtet.")
-    if settings.enable_captions and not captions.whisper_available():
+    if settings.enable_captions and not captions.library_available():
         warnings.append("ENABLE_CAPTIONS=1, aber faster-whisper ist nicht installiert – Clips ohne Untertitel.")
     if not settings.anthropic_api_key:
         warnings.append("Kein Anthropic-API-Key – Hooks und Captions kommen aus einer einfachen Vorlage (optional, unter Streamer → Einstellungen).")
@@ -258,6 +258,62 @@ def update_status() -> dict[str, Any]:
 def request_update() -> dict[str, Any]:
     (settings.data_dir / "update-request").write_text(str(time.time()))
     return _update_status()
+
+
+# ---------- Zeitplan & Auswertung ----------
+@app.get("/api/schedule", dependencies=A)
+async def get_schedule(refresh: bool = False) -> list[dict[str, Any]]:
+    if refresh:
+        await watcher.backfill_vods()
+    out = []
+    since = time.time() - 28 * 86400
+    for s in db.all("SELECT * FROM streamers ORDER BY channel"):
+        sessions = db.all("SELECT * FROM live_sessions WHERE streamer_id=? AND (ended_at IS NULL OR ended_at > ?)",
+                          (s["id"], since))
+        heat = schedule.heatmap(sessions)
+        hours = sum(((x["ended_at"] or time.time()) - max(x["started_at"], since)) for x in sessions) / 3600
+        out.append({"id": s["id"], "channel": s["channel"], "name": s["display_name"] or s["channel"],
+                    "live": bool(watcher.live.get(s["id"], {}).get("live")), "heat": heat,
+                    "summary": schedule.summary(heat), "next": schedule.next_likely(heat),
+                    "streams": len(sessions), "hours_per_week": round(hours / 4, 1)})
+    return out
+
+
+@app.get("/api/stats", dependencies=A)
+def stats() -> dict[str, Any]:
+    rows = _tracker_rows()
+    camps = {c["id"]: c for c in db.all("SELECT * FROM campaigns")}
+
+    def group(key: str) -> list[dict[str, Any]]:
+        g: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            name = r.get(key) or "ohne"
+            e = g.setdefault(name, {"name": name, "posts": 0, "views": 0, "estimate": 0.0, "paid": 0.0})
+            e["posts"] += 1
+            e["views"] += int(r["views"] or 0)
+            e["estimate"] += r["estimate"]
+            e["paid"] += float(r["paid"] or 0)
+        for e in g.values():
+            e["estimate"] = round(e["estimate"], 2)
+            e["paid"] = round(e["paid"], 2)
+            e["avg_views"] = round(e["views"] / e["posts"]) if e["posts"] else 0
+        return sorted(g.values(), key=lambda e: (e["estimate"], e["views"]), reverse=True)
+
+    clip_counts = {r["channel"] or "ohne": r["n"] for r in db.all(
+        "SELECT s.channel, COUNT(*) AS n FROM clips c LEFT JOIN streamers s ON s.id = c.streamer_id "
+        "WHERE c.status='ready' GROUP BY s.channel")}
+    by_streamer = group("channel")
+    for e in by_streamer:
+        e["clips"] = clip_counts.get(e["name"], 0)
+    top = sorted(rows, key=lambda r: int(r["views"] or 0), reverse=True)[:5]
+    week = time.time() - 7 * 86400
+    return {"by_streamer": by_streamer, "by_campaign": group("campaign_name"),
+            "top": [{"id": r["id"], "channel": r["channel"], "platform": r["platform"], "views": r["views"],
+                     "estimate": r["estimate"], "url": r["url"], "thumb_url": r["thumb_url"], "hook": r["hook"]}
+                    for r in top if int(r["views"] or 0) > 0],
+            "week": {"posts": sum(1 for r in rows if (r["posted_at"] or 0) > week),
+                     "views": sum(int(r["views"] or 0) for r in rows if (r["posted_at"] or 0) > week)},
+            "campaigns_known": len(camps)}
 
 
 # ---------- Push ----------
@@ -635,6 +691,7 @@ class ClipPatch(BaseModel):
     trim_start: float | None = None
     trim_end: float | None = None
     seen: int | None = None
+    captions: int | None = None
 
 
 @app.patch("/api/clips/{cid}", dependencies=A)

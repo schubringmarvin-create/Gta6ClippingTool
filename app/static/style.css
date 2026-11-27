@@ -116,3 +116,11 @@ label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .stream-box iframe { width: 100%; height: 100%; border: 0; display: block; }
 
 .pill.new { color: #fff; background: var(--pink); font-weight: 700; }
+
+.heat { display: grid; grid-template-columns: 22px repeat(24, 1fr); gap: 2px; margin: 8px 0 4px; font-size: 9px; color: var(--muted); }
+.heat .hc { aspect-ratio: 1; border-radius: 2px; }
+.heat .hc.now { outline: 1.5px solid var(--text); }
+.heat .dl { font-size: 10px; line-height: 1; align-self: center; }
+.heat .hl { text-align: left; }
+details summary { cursor: pointer; padding: 2px 0; }
+.stat-row { padding: 4px 0; }

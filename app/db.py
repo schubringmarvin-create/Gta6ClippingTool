@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS clips (
     error TEXT DEFAULT '',
     created_at REAL
 );
+CREATE TABLE IF NOT EXISTS live_sessions (
+    id INTEGER PRIMARY KEY,
+    streamer_id INTEGER REFERENCES streamers(id) ON DELETE CASCADE,
+    started_at REAL,
+    ended_at REAL,
+    source TEXT DEFAULT 'live',
+    UNIQUE(streamer_id, started_at)
+);
 CREATE TABLE IF NOT EXISTS push_subs (
     id INTEGER PRIMARY KEY,
     endpoint TEXT UNIQUE,
@@ -107,7 +115,8 @@ class DB:
 
     def _migrate(self) -> None:
         """Neue Spalten in bestehenden Datenbanken nachrüsten."""
-        wanted = {"clips": {"trim_start": "REAL DEFAULT 0", "trim_end": "REAL DEFAULT 0", "seen": "INTEGER DEFAULT 0"}}
+        wanted = {"clips": {"trim_start": "REAL DEFAULT 0", "trim_end": "REAL DEFAULT 0", "seen": "INTEGER DEFAULT 0",
+                            "captions": "INTEGER DEFAULT 0"}}
         for table, cols in wanted.items():
             have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
             for col, typ in cols.items():
@@ -169,6 +178,11 @@ class DB:
         with self._lock:
             self._conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+            self._conn.commit()
+
+    def execute(self, sql: str, args: tuple = ()) -> None:
+        with self._lock:
+            self._conn.execute(sql, args)
             self._conn.commit()
 
     def delete_where(self, table: str, column: str, value: Any) -> None:
