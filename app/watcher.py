@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from . import captions, clipper
 from .config import Settings
 from .db import DB
 from .hook import make_hook
-from .hype import Hype, HypeDetector
+from .hype import Hype, HypeDetector, find_keywords
 from .chat import twitch_chat, youtube_chat
 from .twitch import Twitch, parse_time
 
@@ -49,6 +50,8 @@ class Watcher:
         self.twitch = Twitch(settings.twitch_client_id, settings.twitch_client_secret) if settings.twitch_ready else None
         self.live: dict[int, dict[str, Any]] = {}
         self.detectors: dict[int, HypeDetector] = {}
+        self.chat_logs: dict[int, deque] = {}
+        self.chat_seq = 0
         self.chat_tasks: dict[int, asyncio.Task] = {}
         self.queue: asyncio.Queue[int] = asyncio.Queue()
         self.tasks: list[asyncio.Task] = []
@@ -115,16 +118,28 @@ class Watcher:
             if sid not in live_now or sid not in active_ids:
                 self.chat_tasks.pop(sid).cancel()
                 self.live.pop(sid, None)
+                self.chat_logs.pop(sid, None)
         self.last_poll = time.time()
 
     async def _chat(self, streamer: dict[str, Any], info: dict[str, Any]) -> None:
         sid = streamer["id"]
         source = twitch_chat(streamer["channel"]) if streamer["platform"] == "twitch" else youtube_chat(info["url"])
         det = self.detectors[sid]
-        async for text in source:
-            hype = det.feed(time.time(), text)
+        log_ = self.chat_logs.setdefault(sid, deque(maxlen=80))
+        async for user, text, color in source:
+            now = time.time()
+            self.chat_seq += 1
+            log_.append({"id": self.chat_seq, "t": now, "u": user, "m": text[:300], "c": color,
+                         "k": bool(find_keywords(text))})
+            hype = det.feed(now, text)
             if hype:
+                self.chat_seq += 1
+                log_.append({"id": self.chat_seq, "t": now, "u": "", "m": f"🔥 HYPE erkannt: {hype.rate}/s – Clip wird erstellt",
+                             "c": "", "k": True, "sys": True})
                 await self.on_hype(streamer, hype)
+
+    def chat(self, sid: int, after: int = 0) -> list[dict[str, Any]]:
+        return [m for m in self.chat_logs.get(sid, ()) if m["id"] > after]
 
     def status(self) -> list[dict[str, Any]]:
         now = time.time()

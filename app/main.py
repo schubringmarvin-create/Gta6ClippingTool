@@ -256,6 +256,13 @@ async def clip_now(sid: int) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+@app.get("/api/chat", dependencies=A)
+def chat_all(after: int = 0) -> dict[str, Any]:
+    """Neue Chat-Nachrichten aller Live-Streamer seit Nachricht-ID `after`."""
+    out = {str(sid): watcher.chat(sid, after) for sid in list(watcher.chat_logs)}
+    return {"chats": out, "last": watcher.chat_seq}
+
+
 @app.post("/api/poll", dependencies=A)
 async def poll_now() -> dict[str, bool]:
     await watcher.poll()

@@ -1,5 +1,5 @@
 from app.hype import HypeDetector, find_keywords
-from app.chat import parse_privmsg
+from app.chat import parse_line, parse_privmsg
 
 
 def test_keywords():
@@ -12,6 +12,9 @@ def test_parse_privmsg():
     line = "@badge-info=;color=#FF0000 :user!user@user.tmi.twitch.tv PRIVMSG #skilmasktimmy :OMG CLIP IT"
     assert parse_privmsg(line) == "OMG CLIP IT"
     assert parse_privmsg(":tmi.twitch.tv 001 justinfan :Welcome") is None
+    tagged = "@color=#1E90FF;display-name=Boeshi_Fan;mod=0 :boeshi_fan!boeshi_fan@x.tmi.twitch.tv PRIVMSG #darealboeshi :KEKW"
+    assert parse_line(tagged) == ("Boeshi_Fan", "KEKW", "#1E90FF")
+    assert parse_line(":nick!nick@x PRIVMSG #c :hi") == ("nick", "hi", "")
 
 
 def feed_rate(det, start, seconds, per_second, text="hi"):

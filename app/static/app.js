@@ -83,12 +83,30 @@ function closeSheet() {
 $("#sheet").addEventListener("click", (e) => { if (e.target.id === "sheet") closeSheet(); });
 
 /* ---------- Live ---------- */
+let chatLast = 0;
+let chatTimer = null;
+
 async function renderLive() {
+  chatLast = 0;
+  view.innerHTML = `<div id="live-top"></div>
+    <div id="chat-wrap" class="hidden"><h2>Chat Live</h2><div id="chat-live" class="chat-grid"></div></div>
+    <div id="live-bottom"></div>`;
+  await updateLive();
+  clearInterval(timer);
+  timer = setInterval(() => tab === "live" && !document.hidden && updateLive().catch(() => {}), 5000);
+  clearInterval(chatTimer);
+  chatTimer = setInterval(() => { if (tab !== "live") return clearInterval(chatTimer); if (!document.hidden) pollChat().catch(() => {}); }, 2000);
+  pollChat().catch(() => {});
+}
+
+async function updateLive() {
+  const top = $("#live-top");
+  if (!top) return;
   const s = await api("/api/status");
   const live = s.streamers.filter((x) => x.live);
   const off = s.streamers.filter((x) => !x.live);
   const c = s.clips || {};
-  view.innerHTML = `
+  top.innerHTML = `
     ${s.warnings.map((w) => `<div class="card warn-box">${esc(w)}</div>`).join("")}
     <div class="stats">
       <div class="stat"><b>${live.length}</b><span>live</span></div>
@@ -96,12 +114,13 @@ async function renderLive() {
       <div class="stat"><b>${c.ready || 0}</b><span>Clips fertig</span></div>
     </div>
     <h2>Gerade live</h2>
-    ${live.length ? live.map(liveCard).join("") : `<div class="card muted">Niemand von deiner Liste ist live. ${s.streamers.length ? "" : "Füge unter <b>Streamer</b> Kanäle hinzu."}</div>`}
+    ${live.length ? live.map(liveCard).join("") : `<div class="card muted">Niemand von deiner Liste ist live. ${s.streamers.length ? "" : "Füge unter <b>Streamer</b> Kanäle hinzu."}</div>`}`;
+  $("#live-bottom").innerHTML = `
     ${off.length ? `<h2>Offline</h2><div class="card stack">${off.map((x) => `<div class="row"><span class="dot"></span><span class="grow ellipsis">${esc(x.display_name || x.channel)}</span><span class="pill">${x.platform}</span>${x.active ? "" : '<span class="pill warn">pausiert</span>'}</div>`).join("")}</div>` : ""}
     <h2>Letzte Hype-Momente</h2>
     ${s.events.length ? `<div class="card stack">${s.events.map((e) => `<div class="row between small"><span>${esc(e.channel || "?")} · ${fmtTime(e.ts)}</span><span class="pill ${e.score ? "ok" : ""}">${e.keywords?.[0] === "manuell" ? "manuell" : e.rate + "/s (normal " + e.baseline + ")"}</span></div>`).join("")}</div>` : '<div class="card muted small">Noch keine.</div>'}
     <p class="muted small">Letzte Abfrage: ${fmtTime(s.last_poll) || "–"}</p>`;
-  view.querySelectorAll("[data-clipnow]").forEach((b) =>
+  top.querySelectorAll("[data-clipnow]").forEach((b) =>
     b.addEventListener("click", async () => {
       b.disabled = true;
       try {
@@ -111,7 +130,41 @@ async function renderLive() {
       b.disabled = false;
     })
   );
-  clearInterval(timer); timer = setInterval(() => tab === "live" && !document.hidden && renderLive().catch(() => {}), 5000);
+  // Chat-Kästen passend zu den Live-Streamern anlegen / entfernen (ohne den Inhalt zu löschen)
+  const grid = $("#chat-live");
+  const ids = new Set(live.map((x) => String(x.id)));
+  grid.querySelectorAll("[data-chat]").forEach((box) => { if (!ids.has(box.dataset.chat)) box.remove(); });
+  live.forEach((x) => {
+    if (!grid.querySelector(`[data-chat="${x.id}"]`)) {
+      const box = document.createElement("div");
+      box.className = "chat-box";
+      box.dataset.chat = String(x.id);
+      box.innerHTML = `<div class="chat-head"><span class="dot live"></span><b class="ellipsis">${esc(x.display_name || x.channel)}</b></div><div class="chat-msgs"><div class="muted small chat-empty">Warte auf Nachrichten …</div></div>`;
+      grid.appendChild(box);
+    }
+  });
+  $("#chat-wrap").classList.toggle("hidden", live.length === 0);
+}
+
+async function pollChat() {
+  const grid = $("#chat-live");
+  if (!grid) return;
+  const r = await api(`/api/chat?after=${chatLast}`);
+  chatLast = r.last;
+  for (const [sid, msgs] of Object.entries(r.chats)) {
+    const list = grid.querySelector(`[data-chat="${sid}"] .chat-msgs`);
+    if (!list || !msgs.length) continue;
+    list.querySelector(".chat-empty")?.remove();
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    for (const m of msgs) {
+      const el = document.createElement("div");
+      el.className = "chat-msg" + (m.k ? " kw" : "") + (m.sys ? " sys" : "");
+      el.innerHTML = m.sys ? esc(m.m) : `<b style="color:${/^#[0-9a-f]{6}$/i.test(m.c) ? m.c : "var(--pink)"}">${esc(m.u)}</b> ${esc(m.m)}`;
+      list.appendChild(el);
+    }
+    while (list.children.length > 80) list.firstChild.remove();
+    if (atBottom) list.scrollTop = list.scrollHeight;
+  }
 }
 
 function liveCard(x) {
