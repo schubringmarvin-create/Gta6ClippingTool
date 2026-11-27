@@ -58,6 +58,14 @@ class Watcher:
         self.last_poll = 0.0
         self.last_error = ""
 
+    def new_detector(self) -> HypeDetector:
+        return HypeDetector(factor=self.s.hype_factor, min_rate=self.s.hype_min_rate, cooldown=self.s.hype_cooldown,
+                            max_per_hour=int(self.s.hype_max_per_hour))
+
+    def apply_hype_settings(self) -> None:
+        for det in self.detectors.values():
+            det.configure(self.s.hype_factor, self.s.hype_min_rate, self.s.hype_cooldown, int(self.s.hype_max_per_hour))
+
     def reconfigure(self) -> None:
         """Nach Änderung der Schlüssel in der App neuen Twitch-Client anlegen."""
         self.twitch = Twitch(self.s.twitch_client_id, self.s.twitch_client_secret) if self.s.twitch_ready else None
@@ -111,8 +119,7 @@ class Watcher:
             self.live[sid] = {**prev, **info, "live": True}
             if sid not in self.chat_tasks or self.chat_tasks[sid].done():
                 streamer = next(x for x in streamers if x["id"] == sid)
-                self.detectors[sid] = HypeDetector(factor=self.s.hype_factor, min_rate=self.s.hype_min_rate,
-                                                   cooldown=self.s.hype_cooldown)
+                self.detectors[sid] = self.new_detector()
                 self.chat_tasks[sid] = asyncio.create_task(self._chat(streamer, info))
         for sid in list(self.chat_tasks):
             if sid not in live_now or sid not in active_ids:
@@ -151,6 +158,7 @@ class Watcher:
                         "game": info.get("game", ""), "viewers": info.get("viewers", 0),
                         "rate": round(det.rate(now), 2) if det and info else 0,
                         "baseline": round(det.baseline, 2) if det and info else 0,
+                        "threshold": det.threshold() if det and info else 0,
                         "last_hype": info.get("last_hype"),
                         "video_id": info.get("id", "") if s["platform"] == "youtube" else ""})
         return out

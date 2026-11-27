@@ -7,9 +7,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+# Werte aus der alten .env-Vorlage, die zu viele Clips erzeugt haben -> neue Standards
+_OLD_TEMPLATE = {"HYPE_FACTOR": "3.0", "HYPE_COOLDOWN": "120"}
+
+
 def _f(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == _OLD_TEMPLATE.get(name):
+        return default
     try:
-        return float(os.environ.get(name, default))
+        return float(raw)
     except ValueError:
         return default
 
@@ -30,9 +37,10 @@ class Settings:
     caption_language: str = field(default_factory=lambda: os.environ.get("CAPTION_LANGUAGE", ""))
 
     # Hype-Erkennung
-    hype_factor: float = field(default_factory=lambda: _f("HYPE_FACTOR", 3.0))
+    hype_factor: float = field(default_factory=lambda: _f("HYPE_FACTOR", 4.0))
     hype_min_rate: float = field(default_factory=lambda: _f("HYPE_MIN_RATE", 1.0))
-    hype_cooldown: float = field(default_factory=lambda: _f("HYPE_COOLDOWN", 120))
+    hype_cooldown: float = field(default_factory=lambda: _f("HYPE_COOLDOWN", 300))
+    hype_max_per_hour: float = field(default_factory=lambda: _f("HYPE_MAX_PER_HOUR", 6))
 
     # Clip-Fenster: Sekunden vor / nach dem Hype-Moment
     clip_before: float = field(default_factory=lambda: _f("CLIP_BEFORE", 35))

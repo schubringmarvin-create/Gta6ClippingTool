@@ -52,3 +52,17 @@ def test_update_request():
         assert c.post("/api/update").json()["requested"] is True
         assert (settings.data_dir / "update-request").exists()
         (settings.data_dir / "update-request").unlink()
+
+
+def test_hype_settings():
+    from app.config import settings
+    from app.main import watcher
+    from app.hype import HypeDetector
+    with TestClient(app) as c:
+        c.post("/api/login", json={"password": settings.app_password})
+        watcher.detectors[999] = HypeDetector()
+        r = c.put("/api/settings", json={"hype_factor": 5, "hype_cooldown": 600, "hype_max_per_hour": 4, "hype_min_rate": 2})
+        assert r.status_code == 200 and r.json()["hype_factor"] == 5
+        assert watcher.detectors[999].factor == 5 and watcher.detectors[999].max_per_hour == 4
+        assert c.put("/api/settings", json={"hype_factor": 50}).status_code == 400
+        watcher.detectors.pop(999)

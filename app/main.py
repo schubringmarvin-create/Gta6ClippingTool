@@ -31,6 +31,8 @@ SESSION_DAYS = 60
 
 db = DB(settings.data_dir / "clipper.db")
 EDITABLE = ("twitch_client_id", "twitch_client_secret", "anthropic_api_key")
+# Hype-Regler: (min, max)
+HYPE_KEYS = {"hype_factor": (2, 10), "hype_min_rate": (0.2, 20), "hype_cooldown": (60, 3600), "hype_max_per_hour": (1, 30)}
 
 
 def apply_db_settings() -> None:
@@ -41,6 +43,12 @@ def apply_db_settings() -> None:
             setattr(settings, key, stored[key])
     if stored.get("app_password"):
         settings.app_password = stored["app_password"]
+    for key in HYPE_KEYS:
+        if stored.get(key):
+            try:
+                setattr(settings, key, float(stored[key]))
+            except ValueError:
+                pass
 
 
 apply_db_settings()
@@ -133,6 +141,10 @@ class SettingsIn(BaseModel):
     twitch_client_secret: str | None = None
     anthropic_api_key: str | None = None
     new_password: str | None = None
+    hype_factor: float | None = None
+    hype_min_rate: float | None = None
+    hype_cooldown: float | None = None
+    hype_max_per_hour: float | None = None
 
 
 def _mask(value: str) -> str:
@@ -144,7 +156,8 @@ def get_settings() -> dict[str, Any]:
     return {"twitch_client_id": settings.twitch_client_id,
             "twitch_client_secret": _mask(settings.twitch_client_secret),
             "anthropic_api_key": _mask(settings.anthropic_api_key),
-            "twitch_ready": settings.twitch_ready}
+            "twitch_ready": settings.twitch_ready,
+            **{k: getattr(settings, k) for k in HYPE_KEYS}}
 
 
 @app.put("/api/settings", dependencies=A)
@@ -160,6 +173,17 @@ async def put_settings(body: SettingsIn, response: Response) -> dict[str, Any]:
             raise HTTPException(400, "Passwort muss mindestens 8 Zeichen haben")
         db.set_setting("app_password", body.new_password)
         settings.app_password = body.new_password
+    for key, (lo, hi) in HYPE_KEYS.items():
+        value = getattr(body, key)
+        if value is None:
+            continue
+        if not lo <= value <= hi:
+            raise HTTPException(400, f"Wert für {key} muss zwischen {lo} und {hi} liegen")
+        db.set_setting(key, str(value))
+        setattr(settings, key, float(value))
+    watcher.apply_hype_settings()
+    if not any(getattr(body, k) for k in EDITABLE):
+        return get_settings()  # nur Hype-Regler geändert: keine Twitch-Prüfung nötig
     watcher.reconfigure()
     if watcher.twitch:
         try:

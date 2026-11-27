@@ -168,11 +168,12 @@ function updateLiveCard(card, x) {
   const set = (r, html) => { const el = card.querySelector(`[data-r="${r}"]`); if (el) el.innerHTML = html; };
   set("viewers", x.viewers ? x.viewers.toLocaleString("de-DE") + " Zuschauer" : x.platform);
   set("title", esc(x.game) + (x.game && x.title ? " · " : "") + esc(x.title));
-  set("rate", `Chat: <b>${x.rate}/s</b> <span class="muted">(normal ${x.baseline})</span>`);
+  set("rate", `Chat: <b>${x.rate}/s</b> <span class="muted">(Ø ${x.baseline} · Clip ab ${x.threshold}/s)</span>`);
   const f = card.querySelector('[data-r="factor"]');
-  f.className = "pill " + (factor >= 3 ? "bad" : factor >= 2 ? "warn" : "");
-  f.textContent = factor >= 3 ? "HYPE" : factor.toFixed(1) + "×";
-  card.querySelector('[data-r="meter"]').style.width = Math.min(100, (factor / 3) * 100) + "%";
+  const hot = x.threshold && x.rate >= x.threshold;
+  f.className = "pill " + (hot ? "bad" : x.threshold && x.rate >= x.threshold * 0.6 ? "warn" : "");
+  f.textContent = hot ? "HYPE" : factor.toFixed(1) + "×";
+  card.querySelector('[data-r="meter"]').style.width = Math.min(100, x.threshold ? (x.rate / x.threshold) * 100 : 0) + "%";
 }
 
 function bindLiveCard(card, x) {
@@ -597,6 +598,19 @@ async function renderStreamers() {
       <button class="btn primary" id="set-save">Einstellungen speichern</button>
       <p class="muted small" style="margin:0">Twitch-Schlüssel bekommst du kostenlos unter dev.twitch.tv/console/apps. Leere Felder bleiben unverändert.</p>
     </div>
+    <h2>Hype-Erkennung</h2>
+    <div class="card stack">
+      <p class="muted small" style="margin:0">Ein Clip entsteht nur, wenn der Chat deutlich schneller ist als sein Durchschnitt – und das ein paar Sekunden anhält.</p>
+      <label>Chat muss so viel schneller sein als der Durchschnitt
+        <select id="h-factor">${[3, 4, 5, 6, 8].map((f) => `<option value="${f}" ${cfg.hype_factor == f ? "selected" : ""}>${f}× ${f === 4 ? "(empfohlen)" : f >= 6 ? "(sehr streng)" : f === 3 ? "(mehr Clips)" : ""}</option>`).join("")}</select></label>
+      <label>Mindestens so viele Nachrichten pro Sekunde
+        <select id="h-min">${[0.5, 1, 2, 3, 5].map((f) => `<option value="${f}" ${cfg.hype_min_rate == f ? "selected" : ""}>${String(f).replace(".", ",")} / s ${f === 1 ? "(empfohlen)" : f < 1 ? "(auch kleine Streams)" : ""}</option>`).join("")}</select></label>
+      <label>Pause nach einem Clip (pro Streamer)
+        <select id="h-cool">${[120, 300, 600, 900, 1800].map((f) => `<option value="${f}" ${cfg.hype_cooldown == f ? "selected" : ""}>${f / 60} Minuten</option>`).join("")}</select></label>
+      <label>Höchstens so viele Clips pro Stunde (pro Streamer)
+        <select id="h-max">${[2, 4, 6, 10, 20].map((f) => `<option value="${f}" ${cfg.hype_max_per_hour == f ? "selected" : ""}>${f}</option>`).join("")}</select></label>
+      <button class="btn" id="h-save">Hype-Einstellungen speichern</button>
+    </div>
     <h2>App-Update</h2>
     <div class="card stack" id="upd-card">
       <div class="small">Version: <b>${esc(upd.version || "unbekannt")}</b></div>
@@ -605,6 +619,13 @@ async function renderStreamers() {
       <p class="muted small" style="margin:0">Updates kommen außerdem jede Nacht automatisch. Während der Installation ist die App 2–5 Minuten nicht erreichbar.</p>
     </div>
     <button class="btn ghost" id="logout" style="width:100%;margin-top:8px">Abmelden</button>`;
+  $("#h-save").addEventListener("click", async () => {
+    try {
+      await api("/api/settings", { method: "PUT", body: { hype_factor: Number($("#h-factor").value), hype_min_rate: Number($("#h-min").value),
+        hype_cooldown: Number($("#h-cool").value), hype_max_per_hour: Number($("#h-max").value) } });
+      toast("Gespeichert – gilt sofort");
+    } catch (e) { toast(e.message); }
+  });
   $("#upd-go").addEventListener("click", async () => {
     try {
       await api("/api/update", { method: "POST" });
