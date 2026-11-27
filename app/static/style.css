@@ -100,10 +100,17 @@ label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .seg button { flex: none; }
 .seg .btn.active { background: var(--text); color: var(--bg); }
 
-.chat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
-.chat-box { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; height: 300px; min-width: 0; }
+.chat-box { background: var(--card2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; height: 260px; min-width: 0; }
 .chat-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; min-width: 0; }
 .chat-msgs { flex: 1; overflow-y: auto; padding: 6px 10px; font-size: 12.5px; line-height: 1.35; -webkit-overflow-scrolling: touch; }
 .chat-msg { padding: 2px 0; word-wrap: break-word; overflow-wrap: anywhere; }
 .chat-msg.kw { background: rgba(255,176,46,.12); border-radius: 6px; padding: 2px 4px; }
 .chat-msg.sys { color: var(--orange); font-weight: 700; }
+
+.btn.toggle.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.media { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 10px; }
+.media.both { grid-template-columns: 1fr 1fr; }
+.media.both .chat-box { height: 220px; }
+.stream-box { border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; min-width: 0; }
+.media.both .stream-box { aspect-ratio: auto; height: 220px; }
+.stream-box iframe { width: 100%; height: 100%; border: 0; display: block; }

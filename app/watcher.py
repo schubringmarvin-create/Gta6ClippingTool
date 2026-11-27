@@ -151,7 +151,8 @@ class Watcher:
                         "game": info.get("game", ""), "viewers": info.get("viewers", 0),
                         "rate": round(det.rate(now), 2) if det and info else 0,
                         "baseline": round(det.baseline, 2) if det and info else 0,
-                        "last_hype": info.get("last_hype")})
+                        "last_hype": info.get("last_hype"),
+                        "video_id": info.get("id", "") if s["platform"] == "youtube" else ""})
         return out
 
     # ---------- Hype -> Clip ----------

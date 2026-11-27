@@ -89,7 +89,7 @@ let chatTimer = null;
 async function renderLive() {
   chatLast = 0;
   view.innerHTML = `<div id="live-top"></div>
-    <div id="chat-wrap" class="hidden"><h2>Chat Live</h2><div id="chat-live" class="chat-grid"></div></div>
+    <h2>Gerade live</h2><div id="live-cards"></div>
     <div id="live-bottom"></div>`;
   await updateLive();
   clearInterval(timer);
@@ -112,42 +112,108 @@ async function updateLive() {
       <div class="stat"><b>${live.length}</b><span>live</span></div>
       <div class="stat"><b>${(c.queued || 0) + (c.cutting || 0)}</b><span>in Arbeit</span></div>
       <div class="stat"><b>${c.ready || 0}</b><span>Clips fertig</span></div>
-    </div>
-    <h2>Gerade live</h2>
-    ${live.length ? live.map(liveCard).join("") : `<div class="card muted">Niemand von deiner Liste ist live. ${s.streamers.length ? "" : "Füge unter <b>Streamer</b> Kanäle hinzu."}</div>`}`;
+    </div>`;
   $("#live-bottom").innerHTML = `
     ${off.length ? `<h2>Offline</h2><div class="card stack">${off.map((x) => `<div class="row"><span class="dot"></span><span class="grow ellipsis">${esc(x.display_name || x.channel)}</span><span class="pill">${x.platform}</span>${x.active ? "" : '<span class="pill warn">pausiert</span>'}</div>`).join("")}</div>` : ""}
     <h2>Letzte Hype-Momente</h2>
     ${s.events.length ? `<div class="card stack">${s.events.map((e) => `<div class="row between small"><span>${esc(e.channel || "?")} · ${fmtTime(e.ts)}</span><span class="pill ${e.score ? "ok" : ""}">${e.keywords?.[0] === "manuell" ? "manuell" : e.rate + "/s (normal " + e.baseline + ")"}</span></div>`).join("")}</div>` : '<div class="card muted small">Noch keine.</div>'}
     <p class="muted small">Letzte Abfrage: ${fmtTime(s.last_poll) || "–"}</p>`;
-  top.querySelectorAll("[data-clipnow]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      b.disabled = true;
-      try {
-        await api(`/api/streamers/${b.dataset.clipnow}/clip-now`, { method: "POST" });
-        toast("Clip wird erstellt – dauert ca. 2 Minuten.");
-      } catch (err) { toast(err.message); }
-      b.disabled = false;
-    })
-  );
-  // Chat-Kästen passend zu den Live-Streamern anlegen / entfernen (ohne den Inhalt zu löschen)
-  const grid = $("#chat-live");
+
+  // Live-Karten: bestehende nur aktualisieren, damit Chat/Stream offen bleiben
+  const wrap = $("#live-cards");
   const ids = new Set(live.map((x) => String(x.id)));
-  grid.querySelectorAll("[data-chat]").forEach((box) => { if (!ids.has(box.dataset.chat)) box.remove(); });
+  wrap.querySelectorAll("[data-card]").forEach((el) => { if (!ids.has(el.dataset.card)) el.remove(); });
+  wrap.querySelector(".no-live")?.remove();
+  if (!live.length) {
+    wrap.insertAdjacentHTML("beforeend", `<div class="card muted no-live">Niemand von deiner Liste ist live. ${s.streamers.length ? "" : "Füge unter <b>Streamer</b> Kanäle hinzu."}</div>`);
+  }
   live.forEach((x) => {
-    if (!grid.querySelector(`[data-chat="${x.id}"]`)) {
-      const box = document.createElement("div");
-      box.className = "chat-box";
-      box.dataset.chat = String(x.id);
-      box.innerHTML = `<div class="chat-head"><span class="dot live"></span><b class="ellipsis">${esc(x.display_name || x.channel)}</b></div><div class="chat-msgs"><div class="muted small chat-empty">Warte auf Nachrichten …</div></div>`;
-      grid.appendChild(box);
+    let card = wrap.querySelector(`[data-card="${x.id}"]`);
+    if (!card) {
+      wrap.insertAdjacentHTML("beforeend", liveCard(x));
+      card = wrap.querySelector(`[data-card="${x.id}"]`);
+      bindLiveCard(card, x);
     }
+    updateLiveCard(card, x);
   });
-  $("#chat-wrap").classList.toggle("hidden", live.length === 0);
+}
+
+function streamEmbed(x) {
+  const host = location.hostname;
+  if (x.platform === "twitch") return `https://player.twitch.tv/?channel=${encodeURIComponent(x.channel)}&parent=${encodeURIComponent(host)}&muted=true&autoplay=true`;
+  if (x.video_id) return `https://www.youtube.com/embed/${encodeURIComponent(x.video_id)}?autoplay=1&mute=1&playsinline=1`;
+  return "";
+}
+
+function liveCard(x) {
+  return `<div class="card live-card" data-card="${x.id}">
+    <div class="row"><span class="dot live"></span><b class="grow ellipsis">${esc(x.display_name || x.channel)}</b><span class="pill" data-r="viewers"></span></div>
+    <div class="muted small ellipsis" style="margin-top:4px" data-r="title"></div>
+    <div class="row between small" style="margin-top:8px"><span data-r="rate"></span><span class="pill" data-r="factor"></span></div>
+    <div class="meter"><div data-r="meter"></div></div>
+    <div class="btns" style="margin-top:10px"><button class="btn small" data-clipnow="${x.id}">Jetzt clippen</button></div>
+    <div class="btns" style="margin-top:8px">
+      <button class="btn small ghost toggle" data-toggle="chat">💬 Chat</button>
+      <button class="btn small ghost toggle" data-toggle="live">▶ Live</button>
+    </div>
+    <div class="media hidden">
+      <div class="chat-box hidden" data-chat="${x.id}"><div class="chat-msgs"><div class="muted small chat-empty">Warte auf Nachrichten …</div></div></div>
+      <div class="stream-box hidden"></div>
+    </div>
+  </div>`;
+}
+
+function updateLiveCard(card, x) {
+  const factor = x.baseline > 0 ? x.rate / x.baseline : 0;
+  const set = (r, html) => { const el = card.querySelector(`[data-r="${r}"]`); if (el) el.innerHTML = html; };
+  set("viewers", x.viewers ? x.viewers.toLocaleString("de-DE") + " Zuschauer" : x.platform);
+  set("title", esc(x.game) + (x.game && x.title ? " · " : "") + esc(x.title));
+  set("rate", `Chat: <b>${x.rate}/s</b> <span class="muted">(normal ${x.baseline})</span>`);
+  const f = card.querySelector('[data-r="factor"]');
+  f.className = "pill " + (factor >= 3 ? "bad" : factor >= 2 ? "warn" : "");
+  f.textContent = factor >= 3 ? "HYPE" : factor.toFixed(1) + "×";
+  card.querySelector('[data-r="meter"]').style.width = Math.min(100, (factor / 3) * 100) + "%";
+}
+
+function bindLiveCard(card, x) {
+  card.querySelector("[data-clipnow]").addEventListener("click", async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    try {
+      await api(`/api/streamers/${x.id}/clip-now`, { method: "POST" });
+      toast("Clip wird erstellt – dauert ca. 2 Minuten.");
+    } catch (err) { toast(err.message); }
+    b.disabled = false;
+  });
+  const media = card.querySelector(".media");
+  const chat = card.querySelector(".chat-box");
+  const stream = card.querySelector(".stream-box");
+  const layout = () => {
+    const c = !chat.classList.contains("hidden"), l = !stream.classList.contains("hidden");
+    media.classList.toggle("hidden", !c && !l);
+    media.classList.toggle("both", c && l);
+    if (c) { const m = chat.querySelector(".chat-msgs"); m.scrollTop = m.scrollHeight; }
+  };
+  card.querySelectorAll("[data-toggle]").forEach((btn) => btn.addEventListener("click", () => {
+    const isChat = btn.dataset.toggle === "chat";
+    const box = isChat ? chat : stream;
+    const open = box.classList.toggle("hidden") === false;
+    btn.classList.toggle("active", open);
+    if (!isChat) {
+      if (open) {
+        const src = streamEmbed(x);
+        stream.innerHTML = src ? `<iframe src="${src}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>`
+          : '<div class="muted small" style="padding:10px">Stream kann hier nicht angezeigt werden.</div>';
+      } else {
+        stream.innerHTML = ""; // Stream stoppen, spart Datenvolumen
+      }
+    }
+    layout();
+  }));
 }
 
 async function pollChat() {
-  const grid = $("#chat-live");
+  const grid = $("#live-cards");
   if (!grid) return;
   const r = await api(`/api/chat?after=${chatLast}`);
   chatLast = r.last;
@@ -165,18 +231,6 @@ async function pollChat() {
     while (list.children.length > 80) list.firstChild.remove();
     if (atBottom) list.scrollTop = list.scrollHeight;
   }
-}
-
-function liveCard(x) {
-  const factor = x.baseline > 0 ? x.rate / x.baseline : 0;
-  const pct = Math.min(100, (factor / 3) * 100);
-  return `<div class="card">
-    <div class="row"><span class="dot live"></span><b class="grow ellipsis">${esc(x.display_name || x.channel)}</b><span class="pill">${x.viewers ? x.viewers.toLocaleString("de-DE") + " Zuschauer" : x.platform}</span></div>
-    <div class="muted small ellipsis" style="margin-top:4px">${esc(x.game)}${x.game && x.title ? " · " : ""}${esc(x.title)}</div>
-    <div class="row between small" style="margin-top:8px"><span>Chat: <b>${x.rate}/s</b> <span class="muted">(normal ${x.baseline})</span></span><span class="pill ${factor >= 3 ? "bad" : factor >= 2 ? "warn" : ""}">${factor >= 3 ? "HYPE" : factor.toFixed(1) + "×"}</span></div>
-    <div class="meter"><div style="width:${pct}%"></div></div>
-    <div class="btns" style="margin-top:10px"><button class="btn small" data-clipnow="${x.id}">Jetzt clippen</button></div>
-  </div>`;
 }
 
 /* ---------- Clips ---------- */
